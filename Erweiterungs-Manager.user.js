@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         [LSS] 02 - Erweiterungs-Manager
+// @name         [LSS] 02 - Erweiterungs-Manager + Verband
 // @namespace    http://tampermonkey.net/
 // @version      1.5
 // @description  Ermöglicht das einfache Verwalten und Hinzufügen von fehlenden Erweiterungen, Lagerräumen und Ausbaustufen für deine Wachen und Gebäude und den Verbandsgebäuden
@@ -4094,59 +4094,65 @@
     // Funktion zum Bau der ausgewählten Stufen
     async function buildSelectedLevelsAll(buildingsData, userInfo) {
 
-        let totalCredits = 0;
-        let totalCoins = 0;
-        const levelRows = [];
+    let totalCredits = 0;
+    let totalCoins = 0;
+    const levelRows = [];
 
-        for (const building of buildingsData) {
-            const level = selectedLevels[building.id];
-            if (level === undefined || level === null) continue;
+    for (const building of buildingsData) {
+        const level = selectedLevels[building.id];
+        if (level === undefined || level === null) continue;
 
-            const key = `${building.building_type}_${building.small_building ? 'small' : 'normal'}`;
-            const levelList = manualLevels[key];
-            if (!levelList) continue;
+        const key = `${building.building_type}_${building.small_building ? 'small' : 'normal'}`;
+        const levelList = manualLevels[key];
+        if (!levelList) continue;
 
-            const currentLevel = getBuildingLevelInfo(building)?.currentLevel ?? -1;
+        const currentLevel = getBuildingLevelInfo(building)?.currentLevel ?? -1;
 
-            const start = currentLevel === -1 ? 0 : Math.min(currentLevel, level);
-            const end = Math.max(currentLevel, level);
+        // Startet bei der nächsten Stufe nach currentLevel (bei nicht vorhandenem Gebäude: Stufe 1)
+        const startLevel = currentLevel >= 0 ? currentLevel + 1 : 1;
+        const targetLevel = Number(level);
 
-            let buildingCredits = 0;
-            let buildingCoins = 0;
+        // Falls nichts zu tun (z.B. ausgewählte Stufe <= aktuelles Level), überspringen
+        if (targetLevel < startLevel) continue;
 
-            for (let i = start; i <= end; i++) {
-                const stufe = levelList[i];
-                if (!stufe) continue;
-                buildingCredits += stufe.cost || 0;
-                buildingCoins += stufe.coins || 0;
-            }
+        let buildingCredits = 0;
+        let buildingCoins = 0;
 
-            if (buildingCredits === 0 && buildingCoins === 0) continue;
-
-            totalCredits += buildingCredits;
-            totalCoins += buildingCoins;
-
-            levelRows.push({
-                buildingId: building.id,
-                targetLevel: level,
-                buildingCredits,
-                buildingCoins
-            });
+        // Summiere Levelkosten anhand der Level-IDs (nicht Array-Indizes)
+        for (let levelId = startLevel; levelId <= targetLevel; levelId++) {
+            const stufe = levelList.find(l => Number(l.id) === levelId);
+            if (!stufe) continue;
+            buildingCredits += Number(stufe.cost || 0);
+            buildingCoins += Number(stufe.coins || 0);
         }
 
-        if (levelRows.length === 0) {
-            alert("Keine Leveländerungen ausgewählt.");
-            return;
-        }
-        // Übergabe von userInfo, hier befüllt mit den globalen Werten oder Allianzguthaben, falls gewünscht
-        let runtimeUserInfo;
-        if (currentView === 'alliance') {
-            runtimeUserInfo = { credits: allianceInfo ? Number(allianceInfo.credits_current || 0) : 0, coins: 0 };
-        } else {
-            runtimeUserInfo = { credits: currentCredits, coins: currentCoins };
-        }
-        await showCurrencySelectionForLevelsAll(levelRows, runtimeUserInfo, totalCredits, totalCoins);
+        if (buildingCredits === 0 && buildingCoins === 0) continue;
+
+        totalCredits += buildingCredits;
+        totalCoins += buildingCoins;
+
+        levelRows.push({
+            buildingId: building.id,
+            targetLevel,
+            buildingCredits,
+            buildingCoins
+        });
     }
+
+    if (levelRows.length === 0) {
+        alert("Keine Leveländerungen ausgewählt.");
+        return;
+    }
+
+    // Übergabe von userInfo wie bisher
+    let runtimeUserInfo;
+    if (currentView === 'alliance') {
+        runtimeUserInfo = { credits: allianceInfo ? Number(allianceInfo.credits_current || 0) : 0, coins: 0 };
+    } else {
+        runtimeUserInfo = { credits: currentCredits, coins: currentCoins };
+    }
+    await showCurrencySelectionForLevelsAll(levelRows, runtimeUserInfo, totalCredits, totalCoins);
+}
 
     // Funktion um den Ausgewählte Stufen Button zu aktivieren
     function updateBuildSelectedLevelsButtonState(group) {
