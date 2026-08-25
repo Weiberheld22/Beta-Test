@@ -404,10 +404,44 @@
     let buildingGroups = {};
     let currentCredits = 0;
     let currentCoins = 0;
-    // Verbands-Daten
     let allianceInfo = null;
     let allianceBuildingsData = [];
-    let currentView = 'personal'; // 'personal' oder 'alliance'
+    let currentView = 'personal'; 
+    
+    const buildingCountLimits = {
+        0: {
+            9: {
+                requiredBuildings: 10,
+                countSmallBuildings: true
+            },
+            8: {
+                requiredBuildings: 10,
+                countSmallBuildings: true
+            }
+        },
+        2: {
+            0: {
+                requiredBuildings: 10,
+                countSmallBuildings: true
+            }
+        },
+        6: {
+            14: {
+                requiredBuildings: 10,
+                countSmallBuildings: true
+            },
+            15: {
+                requiredBuildings: 10,
+                countSmallBuildings: true
+            }
+        },
+        4: {
+            9: {
+                requiredBuildings: 5,
+                countSmallBuildings: true
+            }
+        }
+    };
     const storageGroups = {};
     const selectedLevels = {};
     const storageBuildQueue = {};
@@ -510,8 +544,6 @@
             const foundArrayName = memberArrays.find(k => Array.isArray(data[k]));
             if (foundArrayName) {
                 const members = data[foundArrayName];
-
-                // Hole aktuelle User-ID
                 let currentUserId = null;
                 try {
                     const userResp = await fetch('/api/userinfo');
@@ -534,8 +566,6 @@
                         admin = admin || Boolean(me.admin || me.is_admin);
                         coadmin = coadmin || Boolean(me.coadmin);
                         finance = finance || Boolean(me.finance);
-                    } else {
-                        // Falls kein matching member gefunden: prüfe erstes Mitglied mit role_flags.admin (falls dein User listbar ist)
                         const anyAdmin = members.find(m => (m.role_flags && m.role_flags.admin) || m.admin || m.role === 'Verbands-Admin');
                         if (anyAdmin) {
                         }
@@ -551,7 +581,6 @@
     }
     async function initAllianceUI() {
         try {
-            // Hide as default
             const allianceBtn = document.getElementById('open-alliance-buildings');
             const allianceInfoDiv = document.getElementById('alliance-info');
             const allianceCreditsSpan = document.getElementById('current-alliance-credits');
@@ -560,7 +589,6 @@
             if (allianceInfoDiv) allianceInfoDiv.style.display = 'none';
 
             const info = await getAllianceInfo();
-            allianceInfo = info; // setze globale Variable, falls vorhanden
 
             console.debug('allianceInfo normalized:', info);
 
@@ -569,13 +597,11 @@
             const hasRights = Boolean(info.admin) || Boolean(info.coadmin) || Boolean(info.finance);
 
             if (!hasRights) {
-                // Keine Rechte -> nichts anzeigen
                 if (allianceBtn) allianceBtn.style.display = 'none';
                 if (allianceInfoDiv) allianceInfoDiv.style.display = 'none';
                 return;
             }
 
-            // Hat Rechte: Anzeige aktivieren
             if (allianceCreditsSpan) allianceCreditsSpan.textContent = (info.credits_current || 0).toLocaleString();
             const selAllianceSpan = document.getElementById('selected-alliance-credits');
             if (selAllianceSpan) selAllianceSpan.textContent = '0';
@@ -634,13 +660,9 @@
 
             // Speichern
             allianceBuildingsData = buildingsData;
-
-            // Falls allianceInfo noch nicht geladen, lade sie
             if (!allianceInfo) {
                 allianceInfo = await getAllianceInfo();
             }
-
-            // Nur anzeigen, wenn Berechtigung besteht
             const hasRights = allianceInfo && (allianceInfo.admin || allianceInfo.coadmin || allianceInfo.finance);
 
             if (hasRights && allianceInfo && document.getElementById('current-alliance-credits')) {
@@ -648,15 +670,11 @@
                 const allianceInfoDiv = document.getElementById('alliance-info');
                 if (allianceInfoDiv) allianceInfoDiv.style.display = 'flex';
             }
-
-            // userInfoOverride so setzen, dass die Anzeige/Buttons auf Verbandscredits prüfen
             const allianceUserInfo = {
                 credits: allianceInfo ? (allianceInfo.credits_current || 0) : 0,
                 coins: 0,
                 premium: false
             };
-
-            // Rendern: übergebe buildingsData und userInfoOverride
             await renderMissingExtensions(buildingsData, allianceUserInfo);
 
             stopLoadingAnimation();
@@ -1231,7 +1249,6 @@
             activateTab(ownBtn);
 
             const categories = Object.keys(buildingTypeNames).filter(category => {
-                // Verbandszellen gehören ausschließlich in den Verbandsbereich
                 if (category === '16_normal') return false;
 
                 return categoryHasExtensions(category);
@@ -1318,8 +1335,6 @@
         if (allianceBtn) {
             allianceBtn.addEventListener('click', createAllianceTab);
         }
-
-        // Standardmäßig eigene Wachen / Gebäude
         createOwnTab();
 
         // Buttons
@@ -1790,13 +1805,9 @@
         const key = `${type}_${size}`;
         const levelData = manualLevels[key];
         if (!levelData) return null;
-
-        // currentLevel ist das Level im Gebäude-Objekt, >=0
+        
         const currentLevel = (typeof building.level === 'number' && building.level >= 0) ? building.level : -1;
-
-        // current = Stufe mit id == currentLevel, oder null falls Level -1
         const current = currentLevel >= 0 ? levelData.find(l => l.id === currentLevel) : null;
-        // next = Level mit id currentLevel + 1, oder erstes Level wenn currentLevel -1 (noch kein Gebäude)
         const next = currentLevel >= 0 ? levelData.find(l => l.id === currentLevel + 1) : levelData[0];
 
         return { current, next, currentLevel };
@@ -1813,7 +1824,7 @@
             return {
                 credits: data.credits_user_current,
                 coins: data.coins_user_current,
-                premium: data.premium // Fügen Sie diese Zeile hinzu, um den Premium-Status zurückzugeben
+                premium: data.premium
             };
         } catch (error) {
             console.error('Fehler beim Abrufen der Credits und Coins:', error);
@@ -1852,6 +1863,44 @@
                 storageGroups[groupKey].push({ building, missingExtensions });
             }
         });
+    }
+
+    // Prüft Erweiterungen anhand der Gesamtanzahl der Gebäude
+    function isBuildingCountLimitReached(buildings, building, extensionId) {
+        const buildingType = Number(building.building_type);
+        const extensionConfig =
+              buildingCountLimits[buildingType]?.[Number(extensionId)];
+
+        if (!extensionConfig) {
+            return false;
+        }
+
+        const requiredBuildings =
+              Number(extensionConfig.requiredBuildings) || 0;
+
+        if (requiredBuildings <= 0) {
+            return false;
+        }
+
+        const countSmallBuildings =
+              extensionConfig.countSmallBuildings !== false;
+
+        const buildingCount = buildings.filter(b =>
+                                               Number(b.building_type) === buildingType &&
+                                               (countSmallBuildings || !b.small_building)
+                                              ).length;
+
+        const allowedCount = Math.floor(
+            buildingCount / requiredBuildings
+        );
+
+        const alreadyBuiltCount = buildings.reduce((count, b) => {
+            return count + (b.extensions || []).filter(ext =>
+                                                       Number(ext.type_id) === Number(extensionId)
+                                                      ).length;
+        }, 0);
+
+        return alreadyBuiltCount >= allowedCount;
     }
 
     // Funktion um die Tabellen mit Daten zu füllen
@@ -2086,7 +2135,8 @@
                     userInfo,
                     buttons.buildSelectedButton,
                     isAllianceView,
-                    allianceInfo
+                    allianceInfo,
+                    buildings
                 );
 
                 spoilerWrapper.appendChild(table);
@@ -2357,37 +2407,29 @@
         const building = buildingsData.find(b => String(b.id) === String(buildingId));
         if (!building) return false;
 
-        // Welche Reihenfolge gilt für diese Wache?
         const buildingTypeKey = `${building.building_type}_${building.small_building ? 'small' : 'normal'}`;
         const storageOrder = manualStorageRooms[buildingTypeKey]?.map(s => s.id) || [];
-
-        // Aktueller Zustand: fertig + im Bau + Queue
         const builtStorages = new Set(getCurrentStorageState(buildingId));
 
-        // Prüfen für jede ausgewählte Erweiterung
         for (let i = 0; i < selectedStorages.length; i++) {
             const storageId = selectedStorages[i];
             const requiredIndex = storageOrder.indexOf(storageId);
-            if (requiredIndex === -1) continue; // Lager nicht in der definierten Reihenfolge-Liste → ignorieren
+            if (requiredIndex === -1) continue; 
 
-            // Alle vorherigen Lager müssen schon "gebaut oder im Bau" sein
             const missing = storageOrder
             .slice(0, requiredIndex)
             .some(prevId => !builtStorages.has(prevId));
 
             if (missing) {
-                return false; // Reihenfolge verletzt
+                return false;
             }
-
-            // Nach Prüfung: so behandeln, als wäre dieser Lagerraum auch gebaut
             builtStorages.add(storageId);
         }
-
         return true;
     }
 
     // Funktion um die Tabelle für Erweiterung, Lager und Ausbaustufen zu erstellen
-    function createExtensionTable(groupKey, group, userInfo, buildSelectedButton, isAlliance = false, allianceInfo = null) {
+    function createExtensionTable(groupKey, group, userInfo, buildSelectedButton, isAlliance = false, allianceInfo = null, buildings = []) {
         const table = document.createElement('table');
 
         table.innerHTML = `
@@ -2671,11 +2713,24 @@
                     return;
                 }
 
+                const buildingCountLimitReached =
+                      isBuildingCountLimitReached(
+                          buildings,
+                          building,
+                          extension.id
+                      );
+
                 const row = document.createElement('tr');
 
                 row.classList.add(
                     `row-${building.id}-${extension.id}`
                 );
+
+                if (buildingCountLimitReached) {
+                    row.style.opacity = '0.55';
+                    row.title =
+                        'Gebäudeanzahl-Limit für diese Erweiterung erreicht';
+                }
 
                 // Checkbox
                 const checkbox = document.createElement('input');
@@ -2689,7 +2744,11 @@
                 checkbox.dataset.coinCost =
                     isAlliance ? 0 : Number(extension.coins) || 0;
 
-                if (isAlliance) {
+                if (buildingCountLimitReached) {
+                    checkbox.disabled = true;
+                    checkbox.title =
+                        'Gebäudeanzahl-Limit für diese Erweiterung erreicht';
+                } else if (isAlliance) {
                     const allianceCredits =
                           Number(allianceInfo?.credits_current || 0);
 
@@ -2707,11 +2766,11 @@
                 });
 
                 row.innerHTML = `
-                <td></td>
-                <td>${getLeitstelleName(building)}</td>
-                <td>${building.caption}</td>
-                <td>${extension.name}</td>
-            `;
+            <td></td>
+            <td>${getLeitstelleName(building)}</td>
+            <td>${building.caption}</td>
+            <td>${extension.name}</td>
+        `;
 
                 row.children[0].appendChild(checkbox);
 
@@ -2731,7 +2790,11 @@
                 creditBtn.style.backgroundColor = '#28a745';
                 creditBtn.style.color = 'white';
 
-                if (isAlliance) {
+                if (buildingCountLimitReached) {
+                    creditBtn.disabled = true;
+                    creditBtn.title =
+                        'Gebäudeanzahl-Limit für diese Erweiterung erreicht';
+                } else if (isAlliance) {
                     creditBtn.disabled =
                         Number(allianceInfo?.credits_current || 0) <
                         Number(extension.cost || 0);
@@ -2793,9 +2856,15 @@
                     coinBtn.style.backgroundColor = '#dc3545';
                     coinBtn.style.color = 'white';
 
-                    coinBtn.disabled =
-                        Number(userInfo?.coins || 0) <
-                        Number(extension.coins || 0);
+                    if (buildingCountLimitReached) {
+                        coinBtn.disabled = true;
+                        coinBtn.title =
+                            'Gebäudeanzahl-Limit für diese Erweiterung erreicht';
+                    } else {
+                        coinBtn.disabled =
+                            Number(userInfo?.coins || 0) <
+                            Number(extension.coins || 0);
+                    }
 
                     coinBtn.onclick = async () => {
                         await buildExtension(
@@ -3948,7 +4017,7 @@
         const KhAllExtensions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]; // Alle Krankenhaus-Erweiterungen
 
         // Falls Premium aktiv ist, gibt es keine Einschränkungen für THW, B-Pol, Schulen und Pol-Sondereinheit
-        if (typeof !user_premium !== "undefined" && user_premium) {
+        if (typeof user_premium !== "undefined" && user_premium) {
             return false; // Keine Einschränkungen für Premium-Nutzer
         }
 
@@ -4881,14 +4950,7 @@
         document.body.appendChild(selectionDiv);
 
         // Ausgewählte Gebäude bauen
-        async function buildSelectedWithCurrency(
-        extensionRows,
-         storageRows,
-         currency,
-         isAllianceBuild,
-         darkMode,
-         modal
-        ) {
+        async function buildSelectedWithCurrency(extensionRows, storageRows, currency, isAllianceBuild, darkMode, modal) {
             const progress = showProgress();
 
             const totalTasks =
@@ -6753,5 +6815,4 @@
 
     // Initiale Aufrufe
     addMenuButton();
-
 })();
