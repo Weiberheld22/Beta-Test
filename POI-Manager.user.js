@@ -1,881 +1,1315 @@
 // ==UserScript==
 // @name         [LSS] POI-Manager
 // @namespace    https://github.com/Caddy21/LSS-Scripte
-// @version      0.2.0
-// @description  Verwaltet LSS-POIs mit IndexedDB und bereitet den automatisierten OSM-Import vor.
+// @version      0.5.0
+// @description  OSM-basierte Massenverwaltung von POIs für Leitstellenspiel mit Nominatim und Overpass.
 // @author       Caddy21
-// @match        https://www.leitstellenspiel.de/*
+// @match        https://www.leitstellenspiel.de/pois*
+// @icon         https://www.leitstellenspiel.de/favicon.ico
 // @grant        none
 // @run-at       document-idle
-// @icon         https://www.leitstellenspiel.de/favicon.ico
 // ==/UserScript==
 
 (function () {
     'use strict';
 
+    // ============================================================
     // Konfiguration
+    // ============================================================
+
     const DEBUG = true;
-    const DEBUG_DATA = false;
 
-    const SCRIPT_NAME = '[LSS] POI-Manager';
+    const NOMINATIM_URL =
+        'https://nominatim.openstreetmap.org/search';
 
-    const DB_NAME = 'LSSPoiManager';
-    const DB_VERSION = 1;
+    const OVERPASS_URL =
+        'https://overpass-api.de/api/interpreter';
 
-    const POI_STORE = 'pois';
-    const META_STORE = 'meta';
+    const LSS_CREATE_POI_URL =
+        '/mission_positions';
 
-    // Nach dieser Zeit gilt der Cache als veraltet.
-    const CACHE_MAX_AGE = 30 * 60 * 1000;
+    const DEFAULT_RADIUS_KM = 5;
 
-    // Nach einem zukünftigen POI-Import wird nach dieser Zeit
-    // erneut die LSS-API abgefragt.
-    const POST_IMPORT_SYNC_DELAY = 5 * 60 * 1000;
+const MIN_RADIUS_KM = 0.5;
+const MAX_RADIUS_KM = 10;
+const RADIUS_STEP_KM = 0.5;
 
-    const POI_API_URL = '/mission_positions.json';
-    const POI_PAGE_URL = '/pois';
+const OVERPASS_TIMEOUT = 120;
 
-    let db = null;
-    let lssPoiTypes = [];
+// Maximale Anzahl der von Overpass weiterverarbeiteten POIs.
+// Verhindert, dass extrem große Abfragen den Manager fluten.
+const MAX_OVERPASS_RESULTS = 3000;
 
-    init();
+// Mindestabstand zwischen zwei Overpass-Abfragen.
+const OVERPASS_QUERY_COOLDOWN = 5000;
 
-    async function init() {
-        debugLog('Initialisierung gestartet.');
+const CREATE_REQUEST_DELAY = 150;
 
-        addProfileMenuButton();
+const DUPLICATE_DISTANCE_METERS = 30;
 
-        try {
-            await initDatabase();
+const MAX_NOMINATIM_RESULTS = 8;
 
-            debugLog('IndexedDB erfolgreich initialisiert.');
-
-            if (isPoiPage()) {
-                await initPoiPage();
-            }
-        } catch (error) {
-            debugError('Initialisierung fehlgeschlagen:', error);
-        }
-    }
-
-    function isPoiPage() {
-        return window.location.pathname === POI_PAGE_URL;
-    }
-
-    // Debug
-    function debugLog(...args) {
-        if (DEBUG) {
-            console.log(SCRIPT_NAME, ...args);
-        }
-    }
-
-    function debugData(label, data) {
-        if (DEBUG && DEBUG_DATA) {
-            console.log(SCRIPT_NAME, label, data);
-        }
-    }
-
-    function debugWarn(...args) {
-        console.warn(SCRIPT_NAME, ...args);
-    }
-
-    function debugError(...args) {
-        console.error(SCRIPT_NAME, ...args);
-    }
-
-    // Profil-Menü
-    function addProfileMenuButton() {
-        if (document.getElementById('poi-manager-btn')) {
-            return;
-        }
-
-        const menu = document.querySelector('#menu_profile + ul.dropdown-menu');
-
-        if (!menu) {
-            debugLog('Profil-Dropdown nicht gefunden.');
-            return;
-        }
-
-        const divider = menu.querySelector('li.divider');
-
-        if (!divider) {
-            debugWarn('Divider im Profil-Dropdown nicht gefunden.');
-            return;
-        }
-
-        const li = document.createElement('li');
-
-        const a = document.createElement('a');
-
-        a.href = POI_PAGE_URL;
-        a.id = 'poi-manager-btn';
-        a.innerHTML =
-            '<span class="glyphicon glyphicon-road"></span>&nbsp;&nbsp; POI-Manager';
-
-        li.appendChild(a);
-
-        menu.insertBefore(li, divider);
-
-        debugLog('POI-Manager Button ins Profil-Dropdown eingefügt.');
-    }
-
-    // IndexedDB
-    function initDatabase() {
-        return new Promise((resolve, reject) => {
-            const request = indexedDB.open(DB_NAME, DB_VERSION);
-
-            request.onupgradeneeded = event => {
-                const database = event.target.result;
-
-                debugLog(
-                    'IndexedDB Upgrade:',
-                    event.oldVersion,
-                    '→',
-                    event.newVersion
-                );
-
-                if (!database.objectStoreNames.contains(POI_STORE)) {
-                    const poiStore = database.createObjectStore(
-                        POI_STORE,
-                        {
-                            keyPath: 'id'
-                        }
-                    );
-
-                    poiStore.createIndex(
-                        'poi_type',
-                        'poi_type',
-                        {
-                            unique: false
-                        }
-                    );
-
-                    poiStore.createIndex(
-                        'latitude',
-                        'latitude',
-                        {
-                            unique: false
-                        }
-                    );
-
-                    poiStore.createIndex(
-                        'longitude',
-                        'longitude',
-                        {
-                            unique: false
-                        }
-                    );
-
-                    debugLog('POI Object Store erstellt.');
-                }
-
-                if (!database.objectStoreNames.contains(META_STORE)) {
-                    database.createObjectStore(
-                        META_STORE,
-                        {
-                            keyPath: 'key'
-                        }
-                    );
-
-                    debugLog('Meta Object Store erstellt.');
-                }
-            };
-
-            request.onsuccess = event => {
-                db = event.target.result;
-
-                db.onversionchange = () => {
-                    db.close();
-
-                    debugWarn(
-                        'IndexedDB wurde von einer anderen Instanz aktualisiert.'
-                    );
-                };
-
-                resolve(db);
-            };
-
-            request.onerror = event => {
-                reject(
-                    event.target.error ||
-                    new Error('IndexedDB konnte nicht geöffnet werden.')
-                );
-            };
-
-            request.onblocked = () => {
-                debugWarn(
-                    'IndexedDB Öffnung wurde blockiert.'
-                );
-            };
-        });
-    }
-
-    function putPoi(poi) {
-        return new Promise((resolve, reject) => {
-            const transaction = db.transaction(
-                POI_STORE,
-                'readwrite'
-            );
-
-            const store = transaction.objectStore(
-                POI_STORE
-            );
-
-            const request = store.put(poi);
-
-            request.onsuccess = () => resolve();
-            request.onerror = event =>
-                reject(event.target.error);
-        });
-    }
-
-    function putPois(pois, progressCallback = null) {
-        return new Promise((resolve, reject) => {
-            if (!pois.length) {
-                resolve();
-                return;
-            }
-
-            const transaction = db.transaction(
-                POI_STORE,
-                'readwrite'
-            );
-
-            const store = transaction.objectStore(
-                POI_STORE
-            );
-
-            let completed = 0;
-
-            transaction.oncomplete = () => {
-                resolve();
-            };
-
-            transaction.onerror = event => {
-                reject(event.target.error);
-            };
-
-            transaction.onabort = event => {
-                reject(
-                    event.target.error ||
-                    new Error('IndexedDB-Transaktion abgebrochen.')
-                );
-            };
-
-            pois.forEach(poi => {
-                const request = store.put(poi);
-
-                request.onsuccess = () => {
-                    completed++;
-
-                    if (progressCallback) {
-                        progressCallback(
-                            completed,
-                            pois.length
-                        );
-                    }
-                };
-
-                request.onerror = event => {
-                    debugError(
-                        'Fehler beim Speichern von POI:',
-                        poi,
-                        event.target.error
-                    );
-                };
-            });
-        });
-    }
-
-    function getPoi(id) {
-        return new Promise((resolve, reject) => {
-            const transaction = db.transaction(
-                POI_STORE,
-                'readonly'
-            );
-
-            const store = transaction.objectStore(
-                POI_STORE
-            );
-
-            const request = store.get(id);
-
-            request.onsuccess = () => {
-                resolve(request.result || null);
-            };
-
-            request.onerror = event => {
-                reject(event.target.error);
-            };
-        });
-    }
-
-    function getAllPois() {
-        return new Promise((resolve, reject) => {
-            const transaction = db.transaction(
-                POI_STORE,
-                'readonly'
-            );
-
-            const store = transaction.objectStore(
-                POI_STORE
-            );
-
-            const request = store.getAll();
-
-            request.onsuccess = () => {
-                resolve(request.result || []);
-            };
-
-            request.onerror = event => {
-                reject(event.target.error);
-            };
-        });
-    }
-
-    function getPoiCount() {
-        return new Promise((resolve, reject) => {
-            const transaction = db.transaction(
-                POI_STORE,
-                'readonly'
-            );
-
-            const store = transaction.objectStore(
-                POI_STORE
-            );
-
-            const request = store.count();
-
-            request.onsuccess = () => {
-                resolve(request.result);
-            };
-
-            request.onerror = event => {
-                reject(event.target.error);
-            };
-        });
-    }
-
-    function clearPois() {
-        return new Promise((resolve, reject) => {
-            const transaction = db.transaction(
-                POI_STORE,
-                'readwrite'
-            );
-
-            const store = transaction.objectStore(
-                POI_STORE
-            );
-
-            const request = store.clear();
-
-            request.onsuccess = () => resolve();
-
-            request.onerror = event => {
-                reject(event.target.error);
-            };
-        });
-    }
-
-    // Meta-Daten
-    function setMeta(key, value) {
-        return new Promise((resolve, reject) => {
-            const transaction = db.transaction(
-                META_STORE,
-                'readwrite'
-            );
-
-            const store = transaction.objectStore(
-                META_STORE
-            );
-
-            const request = store.put({
-                key,
-                value
-            });
-
-            request.onsuccess = () => resolve();
-
-            request.onerror = event => {
-                reject(event.target.error);
-            };
-        });
-    }
-
-    function getMeta(key) {
-        return new Promise((resolve, reject) => {
-            const transaction = db.transaction(
-                META_STORE,
-                'readonly'
-            );
-
-            const store = transaction.objectStore(
-                META_STORE
-            );
-
-            const request = store.get(key);
-
-            request.onsuccess = () => {
-                resolve(
-                    request.result
-                        ? request.result.value
-                        : null
-                );
-            };
-
-            request.onerror = event => {
-                reject(event.target.error);
-            };
-        });
-    }
-
+    // ============================================================
     // LSS POI-Typen
-    function loadLSSPoiTypes() {
-        const select = document.getElementById(
-            'mission_position_poi_type'
-        );
+    // ============================================================
 
-        if (!select) {
-            debugWarn(
-                'LSS POI-Typ-Dropdown nicht gefunden.'
-            );
+    const POI_TYPES = {
+        0: 'Park',
+        1: 'See',
+        2: 'Krankenhaus',
+        3: 'Wald',
+        4: 'Bushaltestelle',
+        5: 'Straßenbahnhaltestelle',
+        6: 'Bahnhof (Regionalverkehr)',
+        7: 'Bahnhof (Regional und Fernverkehr)',
+        8: 'Güterbahnhof',
+        9: 'Supermarkt (Klein)',
+        10: 'Supermarkt (Groß)',
+        11: 'Tankstelle',
+        12: 'Schule',
+        13: 'Museum',
+        14: 'Einkaufszentrum',
+        15: 'Auto-Werkstatt',
+        16: 'Autobahnauf.- / abfahrt',
+        17: 'Weihnachtsmarkt',
+        18: 'Lagerhalle',
+        19: 'Diskothek',
+        20: 'Stadion',
+        21: 'Bauernhof',
+        22: 'Bürokomplex',
+        23: 'Schwimmbad',
+        24: 'Bahnübergang',
+        25: 'Theater',
+        26: 'Festplatz',
+        27: 'Fluss',
+        28: 'Baumarkt',
+        29: 'Flughafen (klein): Start-/Landebahn',
+        30: 'Flughafen (klein): Gebäude',
+        31: 'Flughafen (klein): Flugzeug Standplatz',
+        32: 'Flughafen (groß): Start-/Landebahn',
+        33: 'Flughafen (groß): Terminal',
+        34: 'Flughafen (groß): Vorfeld / Standplätze',
+        35: 'Flughafen (groß): Parkhaus',
+        36: 'Biogasanlage',
+        37: 'Bank',
+        38: 'Kirche',
+        39: 'Chemiepark',
+        40: 'Industrie-Allgemein',
+        41: 'Automobilindustrie',
+        42: 'Müllverbrennungsanlage',
+        43: 'Eishalle',
+        44: 'Holzverarbeitung',
+        45: 'Motorsportanlage',
+        46: 'Tunnel',
+        47: 'Klärwerk',
+        48: 'Innenstadt',
+        49: 'Möbelhaus',
+        50: 'Campingplatz',
+        51: 'Kompostieranlage',
+        52: 'Textilverarbeitung',
+        53: 'Moor',
+        54: 'Hüttenwerk',
+        55: 'Kraftwerk',
+        56: 'Werksgelände',
+        57: 'Seilbahn',
+        58: 'Brücke',
+        59: 'U-Bahn Station',
+        60: 'Eisenbahntunnel',
+        61: 'Zoo',
+        62: 'Kohlekraftwerk',
+        63: 'JVA',
+        64: 'Solarpark',
+        65: 'Raffinerie',
+        66: 'Schiffswerft'
+    };
 
-            return [];
+    // ============================================================
+    // OSM-Mapping
+    // ============================================================
+
+    const OSM_MAPPING = [
+        { tags: { amenity: 'hospital' }, type: 2 },
+        { tags: { amenity: 'clinic' }, type: 2 },
+
+        { tags: { railway: 'station', station: 'subway' }, type: 59 },
+        { tags: { railway: 'station', usage: 'main' }, type: 7 },
+        { tags: { railway: 'station' }, type: 6 },
+        { tags: { railway: 'halt' }, type: 6 },
+        { tags: { railway: 'tram_stop' }, type: 5 },
+        { tags: { railway: 'level_crossing' }, type: 24 },
+
+        { tags: { highway: 'bus_stop' }, type: 4 },
+        { tags: { amenity: 'bus_station' }, type: 4 },
+
+        { tags: { aeroway: 'terminal' }, type: 33 },
+        { tags: { aeroway: 'aerodrome', aerodrome: 'international' }, type: 32 },
+        { tags: { aeroway: 'aerodrome' }, type: 29 },
+        { tags: { aeroway: 'runway' }, type: 29 },
+
+        { tags: { amenity: 'university' }, type: 12 },
+        { tags: { amenity: 'college' }, type: 12 },
+        { tags: { amenity: 'school' }, type: 12 },
+        { tags: { building: 'school' }, type: 12 },
+
+        { tags: { shop: 'supermarket' }, type: 10 },
+        { tags: { shop: 'convenience' }, type: 9 },
+        { tags: { shop: 'kiosk' }, type: 9 },
+
+        { tags: { shop: 'department_store' }, type: 14 },
+        { tags: { shop: 'mall' }, type: 14 },
+        { tags: { shop: 'furniture' }, type: 49 },
+
+        { tags: { shop: 'doityourself' }, type: 28 },
+        { tags: { shop: 'hardware' }, type: 28 },
+
+        { tags: { shop: 'car_repair' }, type: 15 },
+        { tags: { amenity: 'fuel' }, type: 11 },
+        { tags: { amenity: 'bank' }, type: 37 },
+
+        { tags: { building: 'cathedral' }, type: 38 },
+        { tags: { building: 'church' }, type: 38 },
+
+        {
+            tags: {
+                amenity: 'place_of_worship'
+            },
+            type: 38,
+            excludeIf: [
+                { building: 'chapel' },
+                { place_of_worship: 'chapel' },
+                { amenity: 'wayside_shrine' },
+                { amenity: 'wayside_cross' },
+                { tourism: 'wayside_shrine' },
+                { historic: 'wayside_cross' },
+                { historic: 'wayside_shrine' },
+                { man_made: 'cross' }
+            ]
+        },
+
+        { tags: { leisure: 'water_park' }, type: 23 },
+
+        {
+            tags: {
+                leisure: 'swimming_pool'
+            },
+            type: 23,
+            requireAny: [
+                { access: 'public' },
+                { access: 'yes' },
+                { fee: 'yes' },
+                { amenity: 'public_bath' },
+                { sport: 'swimming' }
+            ]
+        },
+
+        {
+            tags: {
+                amenity: 'swimming_pool'
+            },
+            type: 23,
+            requireAny: [
+                { access: 'public' },
+                { access: 'yes' },
+                { fee: 'yes' },
+                { sport: 'swimming' }
+            ]
+        },
+
+        { tags: { amenity: 'public_bath' }, type: 23 },
+
+        { tags: { leisure: 'ice_rink' }, type: 43 },
+
+        {
+            tags: {
+                leisure: 'stadium'
+            },
+            type: 20,
+            excludeIf: [
+                { indoor: 'yes' },
+                { building: 'sports_hall' },
+                { building: 'gym' },
+                { sport: 'fitness' },
+                { sport: 'gymnastics' },
+                { leisure: 'fitness_centre' },
+                { leisure: 'fitness_station' }
+            ]
+        },
+
+        { tags: { amenity: 'theatre' }, type: 25 },
+        { tags: { amenity: 'cinema' }, type: 25 },
+        { tags: { amenity: 'nightclub' }, type: 19 },
+
+        { tags: { tourism: 'museum' }, type: 13 },
+        { tags: { tourism: 'zoo' }, type: 61 },
+
+        { tags: { tourism: 'camp_site' }, type: 50 },
+        { tags: { tourism: 'caravan_site' }, type: 50 },
+
+        { tags: { leisure: 'park' }, type: 0 },
+        { tags: { leisure: 'garden' }, type: 0 },
+
+        { tags: { landuse: 'forest' }, type: 3 },
+        { tags: { natural: 'wood' }, type: 3 },
+
+        { tags: { natural: 'water', water: 'lake' }, type: 1 },
+        { tags: { natural: 'water', water: 'reservoir' }, type: 1 },
+        { tags: { natural: 'water' }, type: 1 },
+
+        { tags: { natural: 'wetland', wetland: 'bog' }, type: 53 },
+        { tags: { natural: 'wetland' }, type: 53 },
+
+        { tags: { waterway: 'river' }, type: 27 },
+        { tags: { waterway: 'stream' }, type: 27 },
+
+        {
+            tags: {
+                power: 'plant',
+                plant_source: 'coal'
+            },
+            type: 62
+        },
+
+        {
+            tags: {
+                power: 'plant',
+                plant_source: 'solar'
+            },
+            type: 64
+        },
+
+        {
+            tags: {
+                power: 'plant',
+                plant_source: 'biogas'
+            },
+            type: 36
+        },
+
+        { tags: { power: 'plant' }, type: 55 },
+
+        {
+            tags: {
+                man_made: 'wastewater_plant'
+            },
+            type: 47
+        },
+
+        {
+            tags: {
+                man_made: 'works'
+            },
+            type: 56
+        },
+
+        {
+            tags: {
+                industrial: 'shipyard'
+            },
+            type: 66
+        },
+
+        {
+            tags: {
+                man_made: 'shipyard'
+            },
+            type: 66
+        },
+
+        {
+            tags: {
+                landuse: 'industrial'
+            },
+            type: 40
+        },
+
+        {
+            tags: {
+                building: 'industrial'
+            },
+            type: 40
+        },
+
+        {
+            tags: {
+                building: 'warehouse'
+            },
+            type: 18
+        },
+
+        {
+            tags: {
+                landuse: 'warehouse'
+            },
+            type: 18
+        },
+
+        {
+            tags: {
+                aerialway: 'gondola'
+            },
+            type: 57
+        },
+
+        {
+            tags: {
+                aerialway: 'cable_car'
+            },
+            type: 57
+        },
+
+        {
+            tags: {
+                highway: 'motorway_junction'
+            },
+            type: 16
+        },
+
+        {
+            tags: {
+                landuse: 'farmyard'
+            },
+            type: 21
+        },
+
+        {
+            tags: {
+                building: 'farm'
+            },
+            type: 21
+        },
+
+        {
+            tags: {
+                amenity: 'prison'
+            },
+            type: 63
+        },
+
+        {
+            tags: {
+                leisure: 'motorsport'
+            },
+            type: 45
+        },
+
+        {
+            tags: {
+                landuse: 'solar_farm'
+            },
+            type: 64
+        },
+
+        {
+            tags: {
+                building: 'office'
+            },
+            type: 22
+        },
+
+        {
+            tags: {
+                office: 'government'
+            },
+            type: 22
+        },
+
+        {
+            tags: {
+                office: 'company'
+            },
+            type: 22
+        },
+
+        {
+            tags: {
+                office: 'yes'
+            },
+            type: 22
+        },
+
+        {
+            tags: {
+                building: 'commercial'
+            },
+            type: 22
+        },
+
+        {
+            tags: {
+                landuse: 'commercial'
+            },
+            type: 22
+        },
+
+        {
+            tags: {
+                man_made: 'bridge'
+            },
+            type: 58
+        },
+
+        {
+            tags: {
+                bridge: 'aqueduct'
+            },
+            type: 58
         }
+    ];
 
-        lssPoiTypes = Array.from(
-            select.options
-        )
-            .filter(option => option.value !== '')
-            .map(option => ({
-                id: Number(option.value),
-                name: option.textContent.trim()
-            }));
+    // ============================================================
+    // Debug
+    // ============================================================
 
-        debugLog(
-            `${lssPoiTypes.length} LSS-POI-Typen erkannt.`
+    function log(...args) {
+        if (!DEBUG) return;
+
+        console.log(
+            '[LSS] POI-Manager:',
+            ...args
         );
-
-        debugData(
-            'LSS POI-Typen:',
-            lssPoiTypes
-        );
-
-        return lssPoiTypes;
     }
 
-    // POI-Seite
-    async function initPoiPage() {
-        debugLog('POI-Seite erkannt.');
+    function warn(...args) {
+        if (!DEBUG) return;
 
-        loadLSSPoiTypes();
+        console.warn(
+            '[LSS] POI-Manager:',
+            ...args
+        );
+    }
 
-        createPoiManagerUI();
+    function error(...args) {
+        console.error(
+            '[LSS] POI-Manager:',
+            ...args
+        );
+    }
 
-        await updatePoiCacheStatus();
+    // ============================================================
+    // Hilfsfunktionen
+    // ============================================================
 
-        const cacheState =
-            await getCacheState();
+    function sleep(ms) {
+        return new Promise(
+            resolve =>
+            setTimeout(
+                resolve,
+                ms
+            )
+        );
+    }
 
+    function escapeHtml(value) {
         if (
-            cacheState.exists &&
-            !cacheState.expired
+            value === null ||
+            value === undefined
         ) {
-            debugLog(
-                'IndexedDB-Cache ist aktuell.'
-            );
-
-            updateUiCacheStatus(
-                cacheState
-            );
-
-            return;
+            return '';
         }
 
-        if (cacheState.exists) {
-            debugLog(
-                'IndexedDB-Cache ist veraltet.'
-            );
-
-            updateUiCacheStatus(
-                cacheState
-            );
-
-            startBackgroundSync();
-
-            return;
-        }
-
-        debugLog(
-            'Noch kein POI-Cache vorhanden.'
-        );
-
-        startInitialSync();
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
     }
 
-    function createPoiManagerUI() {
+    function formatNumber(value) {
+        return Number(
+            value || 0
+        ).toLocaleString('de-DE');
+    }
+
+    function formatDistance(meters) {
         if (
-            document.getElementById(
-                'lss-poi-manager-panel'
+            meters === null ||
+            meters === undefined
+        ) {
+            return '';
+        }
+
+        if (meters < 1000) {
+            return `${Math.round(meters)} m`;
+        }
+
+        return `${(
+            meters / 1000
+        ).toFixed(2)} km`;
+    }
+
+    function normalizeRadius(
+    value
+) {
+    let radius =
+        Number(value);
+
+    if (
+        !Number.isFinite(radius)
+    ) {
+        radius =
+            DEFAULT_RADIUS_KM;
+    }
+
+    radius =
+        Math.round(
+            radius /
+            RADIUS_STEP_KM
+        ) *
+        RADIUS_STEP_KM;
+
+    radius =
+        Math.max(
+            MIN_RADIUS_KM,
+            Math.min(
+                MAX_RADIUS_KM,
+                radius
+            )
+        );
+
+    return Number(
+        radius.toFixed(1)
+    );
+}
+
+    function distanceMeters(
+        lat1,
+        lon1,
+        lat2,
+        lon2
+    ) {
+        const R = 6371000;
+
+        const dLat =
+            (
+                lat2 -
+                lat1
+            ) *
+            Math.PI /
+            180;
+
+        const dLon =
+            (
+                lon2 -
+                lon1
+            ) *
+            Math.PI /
+            180;
+
+        const a =
+            Math.sin(dLat / 2) ** 2 +
+            Math.cos(
+                lat1 *
+                Math.PI /
+                180
+            ) *
+            Math.cos(
+                lat2 *
+                Math.PI /
+                180
+            ) *
+            Math.sin(dLon / 2) ** 2;
+
+        return (
+            2 *
+            R *
+            Math.atan2(
+                Math.sqrt(a),
+                Math.sqrt(1 - a)
+            )
+        );
+    }
+
+    function getOsmCoordinates(element) {
+        if (
+            element.type === 'node'
+        ) {
+            return {
+                latitude: Number(
+                    element.lat
+                ),
+                longitude: Number(
+                    element.lon
+                )
+            };
+        }
+
+        if (
+            element.center &&
+            Number.isFinite(
+                Number(element.center.lat)
+            ) &&
+            Number.isFinite(
+                Number(element.center.lon)
             )
         ) {
-            return;
+            return {
+                latitude: Number(
+                    element.center.lat
+                ),
+                longitude: Number(
+                    element.center.lon
+                )
+            };
         }
 
-        const originalPoiPanel =
-            document.getElementById(
-                'new_poi'
-            );
+        return null;
+    }
 
-        if (!originalPoiPanel) {
-            debugWarn(
-                'Bereich #new_poi nicht gefunden.'
-            );
+    // ============================================================
+    // Mapping prüfen
+    // ============================================================
 
-            return;
+    function tagsMatch(
+        tags,
+        required
+    ) {
+        return Object.entries(
+            required
+        ).every(
+            ([key, value]) =>
+                String(
+                    tags?.[key] ?? ''
+                ).toLowerCase() ===
+                String(
+                    value
+                ).toLowerCase()
+        );
+    }
+
+    function matchesExclude(
+        tags,
+        excludeIf
+    ) {
+        if (!Array.isArray(excludeIf)) {
+            return false;
         }
 
-        const panel =
-            document.createElement('div');
+        return excludeIf.some(
+            condition =>
+            tagsMatch(
+                tags,
+                condition
+            )
+        );
+    }
 
-        panel.id =
-            'lss-poi-manager-panel';
+    function matchesRequireAny(
+        tags,
+        requireAny
+    ) {
+        if (
+            !Array.isArray(
+                requireAny
+            ) ||
+            !requireAny.length
+        ) {
+            return true;
+        }
 
-        panel.className =
-            'panel panel-primary';
+        return requireAny.some(
+            condition =>
+            tagsMatch(
+                tags,
+                condition
+            )
+        );
+    }
 
-        panel.style.marginBottom =
-            '15px';
+    function mapOsmElement(
+        element
+    ) {
+        const tags =
+            element.tags || {};
 
-        panel.innerHTML = `
-            <div class="panel-heading">
-                <span class="glyphicon glyphicon-road"></span>
-                <strong>&nbsp;POI-Manager</strong>
-            </div>
+        for (
+            const mapping of OSM_MAPPING
+        ) {
+            if (
+                !tagsMatch(
+                    tags,
+                    mapping.tags
+                )
+            ) {
+                continue;
+            }
 
-            <div class="panel-body">
+            if (
+                matchesExclude(
+                    tags,
+                    mapping.excludeIf
+                )
+            ) {
+                continue;
+            }
 
-                <div id="lss-poi-cache-status"
-                     class="alert alert-info">
-                    POI-Datenbank wird geprüft...
-                </div>
+            if (
+                !matchesRequireAny(
+                    tags,
+                    mapping.requireAny
+                )
+            ) {
+                continue;
+            }
 
-                <div class="row">
+            return {
+                type:
+                    mapping.type,
 
-                    <div class="col-sm-6">
+                caption:
+                    POI_TYPES[
+                        mapping.type
+                    ] ||
+                    `POI-Typ ${mapping.type}`
+            };
+        }
 
-                        <div class="form-group">
-                            <label>
-                                Lokale POI-Datenbank
-                            </label>
+        return null;
+    }
 
-                            <div id="lss-poi-cache-count"
-                                 style="font-size: 18px;">
-                                -
-                            </div>
-                        </div>
+    // ============================================================
+    // HTTP JSON
+    // ============================================================
 
-                    </div>
-
-                    <div class="col-sm-6">
-
-                        <div class="form-group">
-                            <label>
-                                Letzte Synchronisierung
-                            </label>
-
-                            <div id="lss-poi-cache-date">
-                                -
-                            </div>
-                        </div>
-
-                    </div>
-
-                </div>
-
-                <div class="form-group">
-
-                    <label for="lss-poi-type-test">
-                        Erkannte LSS-POI-Typen
-                    </label>
-
-                    <select
-                        id="lss-poi-type-test"
-                        class="form-control">
-                    </select>
-
-                </div>
-
-                <div class="btn-group">
-
-                    <button
-                        type="button"
-                        id="lss-poi-sync-button"
-                        class="btn btn-primary">
-
-                        <span class="glyphicon glyphicon-refresh"></span>
-                        &nbsp;POI-Daten aktualisieren
-
-                    </button>
-
-                    <button
-                        type="button"
-                        id="lss-poi-db-info-button"
-                        class="btn btn-default">
-
-                        <span class="glyphicon glyphicon-info-sign"></span>
-                        &nbsp;Datenbankinfo
-
-                    </button>
-
-                </div>
-
-                <div
-                    id="lss-poi-sync-progress"
-                    style="display:none; margin-top:15px;">
-
-                    <div class="progress">
-
-                        <div
-                            id="lss-poi-sync-progress-bar"
-                            class="progress-bar progress-bar-striped active"
-                            role="progressbar"
-                            style="width:0%;">
-
-                            0%
-
-                        </div>
-
-                    </div>
-
-                    <div
-                        id="lss-poi-sync-progress-text"
-                        class="text-muted">
-
-                        Lade POIs...
-
-                    </div>
-
-                </div>
-
-            </div>
-        `;
-
-        originalPoiPanel.parentNode.insertBefore(
-            panel,
-            originalPoiPanel
+    async function fetchJson(
+        url,
+        options = {}
+    ) {
+        log(
+            'Request:',
+            url
         );
 
-        populatePoiTypeTestSelect();
-
-        const syncButton =
-            document.getElementById(
-                'lss-poi-sync-button'
+        const response =
+            await fetch(
+                url,
+                options
             );
 
-        syncButton.addEventListener(
-            'click',
-            () => {
-                syncLSSPois(true);
+        if (
+            !response.ok
+        ) {
+            throw new Error(
+                `HTTP ${response.status} ${response.statusText}`
+            );
+        }
+
+        const text =
+            await response.text();
+
+        if (
+            !text.trim()
+        ) {
+            throw new Error(
+                'Leere Serverantwort.'
+            );
+        }
+
+        try {
+            return JSON.parse(
+                text
+            );
+        } catch (err) {
+            console.error(
+                text.substring(
+                    0,
+                    1000
+                )
+            );
+
+            throw new Error(
+                'Server lieferte kein gültiges JSON.'
+            );
+        }
+    }
+
+    // ============================================================
+    // Nominatim
+    // ============================================================
+
+    async function searchLocation(
+        query
+    ) {
+        if (
+            !query.trim()
+        ) {
+            throw new Error(
+                'Bitte einen Ort oder eine Adresse eingeben.'
+            );
+        }
+
+        const params =
+            new URLSearchParams();
+
+        params.set(
+            'q',
+            query.trim()
+        );
+
+        params.set(
+            'format',
+            'jsonv2'
+        );
+
+        params.set(
+            'addressdetails',
+            '1'
+        );
+
+        params.set(
+            'limit',
+            String(
+                MAX_NOMINATIM_RESULTS
+            )
+        );
+
+        params.set(
+            'countrycodes',
+            'de'
+        );
+
+        const url =
+            `${NOMINATIM_URL}?${params.toString()}`;
+
+        return fetchJson(
+            url,
+            {
+                method: 'GET',
+                headers: {
+                    'Accept':
+                        'application/json'
+                }
+            }
+        );
+    }
+
+    // ============================================================
+    // Overpass Query erzeugen
+    // ============================================================
+
+    function buildOverpassQuery(
+        latitude,
+        longitude,
+        radiusKm
+    ) {
+        const radius =
+            Math.round(
+                radiusKm *
+                1000
+            );
+
+        const tagQueries =
+            OSM_MAPPING
+            .map(
+                mapping => {
+                    return Object.entries(
+                        mapping.tags
+                    )
+                    .map(
+                        ([key, value]) => {
+
+                            const escapedKey =
+                                key.replace(
+                                    /"/g,
+                                    '\\"'
+                                );
+
+                            const escapedValue =
+                                String(
+                                    value
+                                ).replace(
+                                    /"/g,
+                                    '\\"'
+                                );
+
+                            return `[${escapedKey}="${escapedValue}"]`;
+                        }
+                    )
+                    .join('');
+                }
+            )
+            .filter(Boolean);
+
+        const uniqueQueries =
+            [
+                ...new Set(
+                    tagQueries
+                )
+            ];
+
+        const blocks =
+            uniqueQueries.map(
+                selector => {
+
+                    return `
+    nwr(
+        around:${radius},${latitude},${longitude}
+    )${selector};
+                    `;
+                }
+            );
+
+        return `
+[out:json][timeout:${OVERPASS_TIMEOUT}];
+
+(
+${blocks.join('\n')}
+);
+
+out center tags;
+        `.trim();
+    }
+
+    // ============================================================
+    // Overpass
+    // ============================================================
+
+    async function searchOverpass(
+    location,
+    radiusKm
+) {
+    const now =
+        Date.now();
+
+    const elapsed =
+        now -
+        lastOverpassQueryTime;
+
+    if (
+        elapsed <
+        OVERPASS_QUERY_COOLDOWN
+    ) {
+        const remaining =
+            Math.ceil(
+                (
+                    OVERPASS_QUERY_COOLDOWN -
+                    elapsed
+                ) /
+                1000
+            );
+
+        throw new Error(
+            `Bitte noch ${remaining} Sekunden warten, bevor eine weitere Overpass-Abfrage gestartet wird.`
+        );
+    }
+
+    lastOverpassQueryTime =
+        now;
+
+    const query =
+        buildOverpassQuery(
+            location.latitude,
+            location.longitude,
+            radiusKm
+        );
+
+    log(
+        'Overpass Query:',
+        query
+    );
+
+    const response =
+        await fetch(
+            OVERPASS_URL,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type':
+                        'application/x-www-form-urlencoded;charset=UTF-8',
+                    'Accept':
+                        'application/json'
+                },
+                body:
+                    `data=${encodeURIComponent(query)}`
             }
         );
 
-        const infoButton =
-            document.getElementById(
-                'lss-poi-db-info-button'
-            );
-
-        infoButton.addEventListener(
-            'click',
-            showDatabaseInfo
+    if (
+        !response.ok
+    ) {
+        throw new Error(
+            `Overpass HTTP ${response.status} ${response.statusText}`
         );
     }
 
-    function populatePoiTypeTestSelect() {
-        const select =
-            document.getElementById(
-                'lss-poi-type-test'
+    const data =
+        await response.json();
+
+    if (
+        !Array.isArray(
+            data.elements
+        )
+    ) {
+        throw new Error(
+            'Overpass lieferte keine gültige Element-Liste.'
+        );
+    }
+
+    log(
+        `Overpass lieferte ${data.elements.length} Elemente.`
+    );
+
+    const originalCount =
+        data.elements.length;
+
+    if (
+        originalCount >
+        MAX_OVERPASS_RESULTS
+    ) {
+        warn(
+            `Overpass lieferte ${originalCount} Elemente. ` +
+            `Es werden maximal ${MAX_OVERPASS_RESULTS} verarbeitet.`
+        );
+
+        data.elements =
+            data.elements.slice(
+                0,
+                MAX_OVERPASS_RESULTS
             );
 
-        if (!select) {
-            return;
-        }
+        data._lssPoiManagerLimited =
+            true;
 
-        select.innerHTML = '';
+        data._lssPoiManagerOriginalCount =
+            originalCount;
+    }
 
-        lssPoiTypes.forEach(type => {
-            const option =
-                document.createElement(
-                    'option'
+    return data;
+}
+
+    // ============================================================
+    // OSM-Daten verarbeiten
+    // ============================================================
+
+    function processOverpassResults(
+        elements,
+        center
+    ) {
+        const results = [];
+
+        const seen =
+            new Set();
+
+        for (
+            const element of
+            elements || []
+        ) {
+            const mapped =
+                mapOsmElement(
+                    element
                 );
 
-            option.value =
-                String(type.id);
+            if (!mapped) {
+                continue;
+            }
 
-            option.textContent =
-                `${type.name} (${type.id})`;
+            const coordinates =
+                getOsmCoordinates(
+                    element
+                );
 
-            select.appendChild(
-                option
+            if (!coordinates) {
+                continue;
+            }
+
+            if (
+                !Number.isFinite(
+                    coordinates.latitude
+                ) ||
+                !Number.isFinite(
+                    coordinates.longitude
+                )
+            ) {
+                continue;
+            }
+
+            const osmKey =
+                `${element.type}/${element.id}`;
+
+            if (
+                seen.has(osmKey)
+            ) {
+                continue;
+            }
+
+            seen.add(
+                osmKey
             );
-        });
-    }
 
-    // Cache-Zustand
-    async function getCacheState() {
-        const lastSync =
-            await getMeta(
-                'lastSync'
-            );
+            const tags =
+                element.tags || {};
 
-        const poiCount =
-            await getPoiCount();
+            const name =
+                tags.name ||
+                tags['name:de'] ||
+                '';
 
-        const exists =
-            poiCount > 0;
+            const address =
+                buildOsmAddress(
+                    tags
+                );
 
-        const timestamp =
-            Number(lastSync || 0);
+            const distance =
+                distanceMeters(
+                    center.latitude,
+                    center.longitude,
+                    coordinates.latitude,
+                    coordinates.longitude
+                );
 
-        const age =
-            timestamp
-                ? Date.now() - timestamp
-                : Infinity;
+            results.push({
+                osmType:
+                    element.type,
 
-        return {
-            exists,
-            poiCount,
-            lastSync: timestamp,
-            age,
-            expired:
-                !timestamp ||
-                age > CACHE_MAX_AGE
-        };
-    }
+                osmId:
+                    element.id,
 
-    async function updatePoiCacheStatus() {
-        const state =
-            await getCacheState();
+                osmKey,
 
-        updateUiCacheStatus(
-            state
+                latitude:
+                    coordinates.latitude,
+
+                longitude:
+                    coordinates.longitude,
+
+                type:
+                    mapped.type,
+
+                typeName:
+                    mapped.caption,
+
+                name,
+
+                address,
+
+                tags,
+
+                distance,
+
+                duplicate:
+                    false
+            });
+        }
+
+        results.sort(
+            (a, b) =>
+                a.distance -
+                b.distance
         );
+
+        return results;
     }
 
-    function updateUiCacheStatus(
-        state
+    // ============================================================
+    // OSM-Adresse
+    // ============================================================
+
+    function buildOsmAddress(
+        tags
     ) {
-        const status =
-            document.getElementById(
-                'lss-poi-cache-status'
+        const parts = [];
+
+        const street =
+            tags['addr:street'];
+
+        const house =
+            tags['addr:housenumber'];
+
+        if (
+            street
+        ) {
+            parts.push(
+                house
+                ? `${street} ${house}`
+                : street
             );
+        }
 
-        const count =
-            document.getElementById(
-                'lss-poi-cache-count'
+        if (
+            tags['addr:postcode']
+        ) {
+            parts.push(
+                tags['addr:postcode']
             );
+        }
 
-        const date =
-            document.getElementById(
-                'lss-poi-cache-date'
+        if (
+            tags['addr:city']
+        ) {
+            parts.push(
+                tags['addr:city']
             );
-
-        if (!status) {
-            return;
         }
 
-        if (count) {
-            count.textContent =
-                `${formatNumber(
-                    state.poiCount
-                )} POIs`;
-        }
-
-        if (date) {
-            date.textContent =
-                state.lastSync
-                    ? formatDate(
-                        state.lastSync
-                    )
-                    : 'Noch nie';
-        }
-
-        if (!state.exists) {
-            status.className =
-                'alert alert-warning';
-
-            status.innerHTML =
-                '<strong>Keine lokale POI-Datenbank vorhanden.</strong><br>' +
-                'Die LSS-POIs werden jetzt erstmalig geladen.';
-
-            return;
-        }
-
-        if (state.expired) {
-            status.className =
-                'alert alert-warning';
-
-            status.innerHTML =
-                '<strong>Lokale POI-Datenbank ist veraltet.</strong><br>' +
-                'Die vorhandenen Daten können weiterhin verwendet werden. ' +
-                'Eine Aktualisierung läuft im Hintergrund.';
-
-            return;
-        }
-
-        status.className =
-            'alert alert-success';
-
-        status.innerHTML =
-            '<strong>POI-Datenbank ist aktuell.</strong><br>' +
-            'Die Duplikatprüfung kann lokal gegen die gespeicherten POIs erfolgen.';
+        return parts.join(
+            ', '
+        );
     }
 
-    // LSS API Synchronisierung
-    async function syncLSSPois(
-        manual = false
+    // ============================================================
+    // Duplikatprüfung
+    // ============================================================
+
+    function isDuplicate(
+        poi,
+        existingPois
     ) {
-        if (!db) {
-            debugError(
-                'IndexedDB ist nicht verfügbar.'
-            );
+        return existingPois.some(
+            existing => {
 
-            return;
-        }
+                const distance =
+                    distanceMeters(
+                        poi.latitude,
+                        poi.longitude,
+                        Number(
+                            existing.latitude
+                        ),
+                        Number(
+                            existing.longitude
+                        )
+                    );
 
-        const syncButton =
-            document.getElementById(
-                'lss-poi-sync-button'
-            );
-
-        if (syncButton) {
-            syncButton.disabled = true;
-        }
-
-        showSyncProgress(
-            true
+                return (
+                    distance <=
+                    DUPLICATE_DISTANCE_METERS
+                );
+            }
         );
+    }
 
-        setSyncProgress(
-            0,
-            'Lade LSS-POIs...'
-        );
+    // ============================================================
+    // LSS-POIs laden
+    //
+    // Der kaputte Generic Worker wird NICHT mehr verwendet.
+    //
+    // Wir versuchen hier zunächst den normalen JSON-Endpunkt.
+    // ============================================================
 
-        debugLog(
-            'Starte Synchronisierung:',
-            manual
-                ? 'manuell'
-                : 'automatisch'
-        );
+    async function loadExistingLSSPois() {
+    const urls = [
+        '/pois/pois_json?limit=10000',
+        '/pois/pois_json?limit=10000&afterID=0'
+    ];
 
+    for (
+        const url of
+        urls
+    ) {
         try {
+            log(
+                'Versuche vorhandene LSS-POIs zu laden:',
+                url
+            );
+
             const response =
                 await fetch(
-                    POI_API_URL,
+                    url,
                     {
                         method: 'GET',
-                        credentials: 'same-origin',
-                        cache: 'no-store',
+                        credentials:
+                            'same-origin',
+                        cache:
+                            'no-store',
                         headers: {
                             'Accept':
                                 'application/json'
@@ -883,471 +1317,2239 @@
                     }
                 );
 
-            debugLog(
-                'LSS POI API HTTP Status:',
-                response.status
-            );
-
-            if (!response.ok) {
-                throw new Error(
-                    `HTTP ${response.status} ${response.statusText}`
+            if (
+                !response.ok
+            ) {
+                warn(
+                    `LSS-POI-Abfrage ${url} lieferte HTTP ${response.status}.`
                 );
+
+                continue;
             }
 
-            setSyncProgress(
-                10,
-                'Antwort von LSS erhalten...'
-            );
-
-            const data =
+            const json =
                 await response.json();
 
-            debugData(
-                'mission_positions.json:',
-                data
-            );
+            let data = [];
 
-            if (!Array.isArray(data)) {
-                throw new Error(
-                    'Die Antwort von /mission_positions.json ist kein Array.'
-                );
+            if (
+                Array.isArray(
+                    json
+                )
+            ) {
+                data =
+                    json;
+            } else if (
+                Array.isArray(
+                    json.data
+                )
+            ) {
+                data =
+                    json.data;
+            } else if (
+                Array.isArray(
+                    json.pois
+                )
+            ) {
+                data =
+                    json.pois;
             }
 
-            debugLog(
-                `${data.length} POIs von LSS erhalten.`
-            );
-
-            setSyncProgress(
-                20,
-                `${formatNumber(
-                    data.length
-                )} POIs erhalten...`
-            );
-
-            const normalizedPois =
-                normalizeLSSPois(
-                    data
+            if (
+                data.length
+            ) {
+                log(
+                    `Vorhandene LSS-POIs geladen: ${data.length}`
                 );
 
-            debugLog(
-                `${normalizedPois.length} POIs normalisiert.`
+                return data;
+            }
+
+            // Ein gültiges, aber leeres Ergebnis ist ebenfalls
+            // eine erfolgreiche Abfrage.
+            if (
+                Array.isArray(data)
+            ) {
+                log(
+                    'LSS-POI-Abfrage war erfolgreich, enthält aber keine POIs.'
+                );
+
+                return [];
+            }
+
+        } catch (err) {
+            warn(
+                'LSS-POIs konnten über diesen Endpunkt nicht geladen werden:',
+                err
+            );
+        }
+    }
+
+    warn(
+        'Es konnten keine vorhandenen LSS-POIs geladen werden.'
+    );
+
+    return [];
+}
+
+    // ============================================================
+    // POI erstellen
+    // ============================================================
+
+    async function createLSSPoi(
+        poi
+    ) {
+        const form =
+            new URLSearchParams();
+
+        form.set(
+            'utf8',
+            '✓'
+        );
+
+        form.set(
+            'mission_position[poi_type]',
+            String(
+                poi.type
+            )
+        );
+
+        form.set(
+            'mission_position[latitude]',
+            String(
+                poi.latitude
+            )
+        );
+
+        form.set(
+            'mission_position[longitude]',
+            String(
+                poi.longitude
+            )
+        );
+
+        form.set(
+            'mission_position[frame]',
+            ''
+        );
+
+        form.set(
+            'mission_position[address]',
+            poi.address ||
+            poi.name ||
+            ''
+        );
+
+        const response =
+            await fetch(
+                LSS_CREATE_POI_URL,
+                {
+                    method: 'POST',
+                    credentials:
+                        'same-origin',
+                    cache:
+                        'no-store',
+                    headers: {
+                        'Content-Type':
+                            'application/x-www-form-urlencoded; charset=UTF-8',
+                        'Accept':
+                            'application/json'
+                    },
+                    body:
+                        form.toString()
+                }
             );
 
-            setSyncProgress(
-                30,
-                'Speichere POIs in IndexedDB...'
+        const text =
+            await response.text();
+
+        let json;
+
+        try {
+            json =
+                JSON.parse(
+                    text
+                );
+        } catch {
+            throw new Error(
+                `LSS lieferte keine JSON-Antwort: ${text.substring(0, 300)}`
+            );
+        }
+
+        if (
+            !response.ok
+        ) {
+            throw new Error(
+                `HTTP ${response.status}`
+            );
+        }
+
+        if (
+            json?.flash?.type !==
+            'success'
+        ) {
+            throw new Error(
+                json?.flash?.message ||
+                'LSS hat den POI nicht bestätigt.'
+            );
+        }
+
+        return json;
+    }
+
+    // ============================================================
+    // UI
+    // ============================================================
+
+    let modal = null;
+
+    let currentLocation = null;
+
+    let currentResults = [];
+
+    let existingLSSPois = [];
+
+    let searchRunning = false;
+
+    let creationRunning = false;
+
+    let lastOverpassQueryTime = 0;
+
+    function createStyles() {
+        if (
+            document.getElementById(
+                'lss-poi-manager-style'
+            )
+        ) {
+            return;
+        }
+
+        const style =
+            document.createElement(
+                'style'
             );
 
-            await clearPois();
+        style.id =
+            'lss-poi-manager-style';
 
-            let lastProgress =
-                -1;
+        style.textContent = `
+            #lss-poi-manager-modal {
+                z-index: 100000;
+            }
 
-            await putPois(
-                normalizedPois,
-                (
-                    completed,
-                    total
-                ) => {
-                    const percent =
-                        30 +
-                        Math.round(
-                            (
-                                completed /
-                                total
-                            ) *
-                            60
-                        );
+            #lss-poi-manager-modal .modal-dialog {
+                width: 1100px;
+                max-width: calc(100vw - 30px);
+            }
 
+            #lss-poi-manager-modal .modal-body {
+                max-height: 80vh;
+                overflow-y: auto;
+            }
+
+            .lss-poi-manager-toolbar {
+                display: flex;
+                gap: 5px;
+                flex-wrap: wrap;
+                margin-bottom: 15px;
+            }
+
+            .lss-poi-manager-location-result {
+                cursor: pointer;
+                padding: 8px;
+                border-bottom: 1px solid #ddd;
+            }
+
+            .lss-poi-manager-location-result:hover {
+                background: #f5f5f5;
+            }
+
+            .lss-poi-manager-location-result strong {
+                display: block;
+            }
+
+            .lss-poi-manager-location-result small {
+                color: #777;
+            }
+
+            .lss-poi-manager-selected-location {
+                padding: 10px;
+                margin-top: 10px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                background: #f9f9f9;
+            }
+
+            .lss-poi-manager-type-row {
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                padding: 5px 0;
+                border-bottom: 1px solid #eee;
+            }
+
+            .lss-poi-manager-type-row input {
+                margin: 0;
+            }
+
+            .lss-poi-manager-type-count {
+                margin-left: auto;
+                min-width: 50px;
+                text-align: right;
+            }
+
+            .lss-poi-manager-results {
+                max-height: 450px;
+                overflow-y: auto;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+
+            .lss-poi-manager-result {
+                padding: 8px;
+                border-bottom: 1px solid #eee;
+            }
+
+            .lss-poi-manager-result:last-child {
+                border-bottom: none;
+            }
+
+            .lss-poi-manager-result-name {
+                font-weight: bold;
+            }
+
+            .lss-poi-manager-result-meta {
+                color: #777;
+                font-size: 12px;
+            }
+
+            .lss-poi-manager-stat {
+                text-align: center;
+                padding: 10px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+            }
+
+            .lss-poi-manager-stat strong {
+                display: block;
+                font-size: 22px;
+            }
+
+            .lss-poi-manager-progress {
+                display: none;
+                margin-top: 15px;
+            }
+
+            .lss-poi-manager-muted {
+                color: #777;
+            }
+
+            .lss-poi-manager-danger {
+                color: #a94442;
+            }
+
+            .lss-poi-manager-success {
+                color: #3c763d;
+            }
+
+            .lss-poi-manager-warning {
+                color: #8a6d3b;
+            }
+
+            #lss-poi-manager-map-link {
+                margin-left: 5px;
+            }
+
+            .lss-poi-manager-radius-input {
+    max-width: 90px;
+}
+        `;
+
+        document.head.appendChild(
+            style
+        );
+    }
+
+    // ============================================================
+    // Button
+    // ============================================================
+
+    function addPoiManagerButton() {
+        if (
+            document.getElementById(
+                'poi-manager-btn'
+            )
+        ) {
+            return true;
+        }
+
+        const navbarHeaders =
+            document.querySelectorAll(
+                '.navbar-header'
+            );
+
+        for (
+            const navbarHeader of
+            navbarHeaders
+        ) {
+            const brand =
+                navbarHeader.querySelector(
+                    'a.navbar-brand'
+                );
+
+            if (
+                !brand ||
+                brand.textContent.trim() !==
+                'POI-Verwaltung'
+            ) {
+                continue;
+            }
+
+            const searchForm =
+                navbarHeader.querySelector(
+                    '#poi_map_adress_search_form'
+                );
+
+            if (!searchForm) {
+                continue;
+            }
+
+            const searchInput =
+                searchForm.querySelector(
+                    '#poi_map_adress_search'
+                );
+
+            if (!searchInput) {
+                continue;
+            }
+
+            const button =
+                document.createElement(
+                    'button'
+                );
+
+            button.type =
+                'button';
+
+            button.id =
+                'poi-manager-btn';
+
+            button.className =
+                'btn btn-default navbar-btn';
+
+            button.title =
+                'POI-Manager öffnen';
+
+            button.innerHTML =
+                '<span class="glyphicon glyphicon-road"></span>' +
+                '&nbsp; POI-Manager';
+
+            button.style.marginLeft =
+                '5px';
+
+            button.addEventListener(
+                'click',
+                event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    openPoiManager();
+                }
+            );
+
+            searchForm.parentNode.insertBefore(
+                button,
+                searchForm.nextSibling
+            );
+
+            log(
+                'POI-Manager Button eingefügt.'
+            );
+
+            return true;
+        }
+
+        return false;
+    }
+
+    // ============================================================
+    // Modal
+    // ============================================================
+
+    function createModal() {
+        if (
+            document.getElementById(
+                'lss-poi-manager-modal'
+            )
+        ) {
+            modal =
+                document.getElementById(
+                    'lss-poi-manager-modal'
+                );
+
+            return modal;
+        }
+
+        createStyles();
+
+        const wrapper =
+            document.createElement(
+                'div'
+            );
+
+        wrapper.innerHTML = `
+            <div
+                id="lss-poi-manager-modal"
+                class="modal fade"
+                tabindex="-1"
+                role="dialog"
+                aria-hidden="true"
+            >
+                <div
+                    class="modal-dialog modal-lg"
+                    role="document"
+                >
+                    <div class="modal-content">
+
+                        <div class="modal-header">
+
+                            <button
+                                type="button"
+                                class="close"
+                                data-dismiss="modal"
+                            >
+                                <span>&times;</span>
+                            </button>
+
+                            <h4 class="modal-title">
+                                <span class="glyphicon glyphicon-road"></span>
+                                &nbsp;LSS POI-Manager
+                            </h4>
+
+                        </div>
+
+                        <div class="modal-body">
+
+                            <div class="row">
+
+                                <div class="col-sm-4">
+                                    <div class="lss-poi-manager-stat">
+                                        <strong id="lss-poi-manager-found">
+                                            0
+                                        </strong>
+                                        OSM-POIs gefunden
+                                    </div>
+                                </div>
+
+                                <div class="col-sm-3">
+        <div class="lss-poi-manager-stat">
+            <strong id="lss-poi-manager-new">
+                0
+            </strong>
+            neue POIs
+        </div>
+    </div>
+
+    <div class="col-sm-3">
+        <div class="lss-poi-manager-stat">
+            <strong id="lss-poi-manager-duplicate">
+                0
+            </strong>
+            bereits vorhanden
+        </div>
+    </div>
+
+                            </div>
+
+                            <hr>
+
+                            <h4>
+                                <span class="glyphicon glyphicon-search"></span>
+                                Ort suchen
+                            </h4>
+
+                            <div class="row">
+
+                                <div class="col-sm-8">
+
+                                    <input
+                                        type="text"
+                                        id="lss-poi-manager-location-search"
+                                        class="form-control"
+                                        placeholder="z. B. Hamburg, München, Berlin..."
+                                    >
+
+                                </div>
+
+                                <div class="col-sm-4">
+
+                                    <button
+                                        type="button"
+                                        id="lss-poi-manager-location-button"
+                                        class="btn btn-primary btn-block"
+                                    >
+                                        <span class="glyphicon glyphicon-search"></span>
+                                        Ort suchen
+                                    </button>
+
+                                </div>
+
+                            </div>
+
+                            <div
+                                id="lss-poi-manager-location-results"
+                                style="margin-top:10px;"
+                            ></div>
+
+                            <div
+                                id="lss-poi-manager-selected-location"
+                                class="lss-poi-manager-selected-location"
+                                style="display:none;"
+                            ></div>
+
+                            <hr>
+
+                            <div class="row">
+
+                                <div class="col-sm-3">
+
+    <label>
+        Suchradius
+    </label>
+
+    <div class="input-group" style="width:120px;">
+
+                                        <input
+    type="number"
+    id="lss-poi-manager-radius"
+    class="form-control lss-poi-manager-radius-input"
+    value="${DEFAULT_RADIUS_KM}"
+    min="${MIN_RADIUS_KM}"
+    max="${MAX_RADIUS_KM}"
+    step="${RADIUS_STEP_KM}"
+>
+
+                                        <span class="input-group-addon">
+                                            km
+                                        </span>
+
+                                    </div>
+
+                                </div>
+
+                                <div class="col-sm-9">
+
+                                    <label>
+                                        Aktionen
+                                    </label>
+
+                                    <div class="lss-poi-manager-toolbar">
+
+                                        <button
+                                            type="button"
+                                            id="lss-poi-manager-osm-search"
+                                            class="btn btn-success"
+                                            disabled
+                                        >
+                                            <span class="glyphicon glyphicon-globe"></span>
+                                            OSM-POIs laden
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            id="lss-poi-manager-select-all"
+                                            class="btn btn-default"
+                                        >
+                                            Alle auswählen
+                                        </button>
+
+                                        <button
+                                            type="button"
+                                            id="lss-poi-manager-select-none"
+                                            class="btn btn-default"
+                                        >
+                                            Alle abwählen
+                                        </button>
+
+                                    </div>
+
+                                </div>
+
+                            </div>
+
+                            <hr>
+
+                            <h4>
+                                <span class="glyphicon glyphicon-list"></span>
+                                POI-Typen
+                            </h4>
+
+                            <div
+                                id="lss-poi-manager-type-list"
+                            >
+                                <div class="alert alert-info">
+                                    Noch keine OSM-Daten geladen.
+                                </div>
+                            </div>
+
+                            <hr>
+
+                            <div
+                                id="lss-poi-manager-result-summary"
+                            >
+                                <div class="alert alert-info">
+                                    Suche einen Ort und lade anschließend die OSM-POIs.
+                                </div>
+                            </div>
+
+                            <div
+                                id="lss-poi-manager-results"
+                                class="lss-poi-manager-results"
+                                style="display:none;"
+                            ></div>
+
+                            <div
+                                id="lss-poi-manager-progress"
+                                class="lss-poi-manager-progress"
+                            >
+
+                                <div class="progress">
+
+                                    <div
+                                        id="lss-poi-manager-progress-bar"
+                                        class="progress-bar progress-bar-success"
+                                        role="progressbar"
+                                        style="width:0%;"
+                                    >
+                                        0%
+                                    </div>
+
+                                </div>
+
+                                <div
+                                    id="lss-poi-manager-progress-text"
+                                    class="text-center"
+                                >
+                                    Bereit
+                                </div>
+
+                            </div>
+
+                            <div
+                                id="lss-poi-manager-status"
+                                style="margin-top:15px;"
+                            ></div>
+
+                        </div>
+
+                        <div class="modal-footer">
+
+                            <span
+                                id="lss-poi-manager-footer-info"
+                                class="pull-left lss-poi-manager-muted"
+                            >
+                                Bereit
+                            </span>
+
+                            <button
+                                type="button"
+                                id="lss-poi-manager-create"
+                                class="btn btn-primary"
+                                disabled
+                            >
+                                <span class="glyphicon glyphicon-plus"></span>
+                                POIs im LSS erstellen
+                            </button>
+
+                            <button
+                                type="button"
+                                class="btn btn-default"
+                                data-dismiss="modal"
+                            >
+                                Schließen
+                            </button>
+
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(
+            wrapper.firstElementChild
+        );
+
+        modal =
+            document.getElementById(
+                'lss-poi-manager-modal'
+            );
+
+        bindModalEvents();
+
+        return modal;
+    }
+
+    // ============================================================
+    // Events
+    // ============================================================
+
+    function bindModalEvents() {
+        document
+            .getElementById(
+                'lss-poi-manager-location-button'
+            )
+            ?.addEventListener(
+                'click',
+                searchLocationFromUI
+            );
+
+        document
+            .getElementById(
+                'lss-poi-manager-location-search'
+            )
+            ?.addEventListener(
+                'keydown',
+                event => {
                     if (
-                        percent !==
-                        lastProgress
+                        event.key ===
+                        'Enter'
                     ) {
-                        lastProgress =
-                            percent;
+                        event.preventDefault();
 
-                        setSyncProgress(
-                            percent,
-                            `Speichere POIs: ${formatNumber(
-                                completed
-                            )} / ${formatNumber(
-                                total
-                            )}`
-                        );
+                        searchLocationFromUI();
                     }
                 }
             );
 
-            await setMeta(
-                'lastSync',
-                Date.now()
+        document
+            .getElementById(
+                'lss-poi-manager-osm-search'
+            )
+            ?.addEventListener(
+                'click',
+                searchOsmFromUI
             );
 
-            await setMeta(
-                'poiCount',
-                normalizedPois.length
-            );
-
-            await setMeta(
-                'databaseVersion',
-                DB_VERSION
-            );
-
-            setSyncProgress(
-                100,
-                'Synchronisierung abgeschlossen.'
-            );
-
-            debugLog(
-                'Synchronisierung abgeschlossen.'
-            );
-
-            await updatePoiCacheStatus();
-
-            setTimeout(
+        document
+            .getElementById(
+                'lss-poi-manager-select-all'
+            )
+            ?.addEventListener(
+                'click',
                 () => {
-                    showSyncProgress(
+                    setAllTypeCheckboxes(
+                        true
+                    );
+
+                    updateSelection();
+                }
+            );
+
+        document
+            .getElementById(
+                'lss-poi-manager-select-none'
+            )
+            ?.addEventListener(
+                'click',
+                () => {
+                    setAllTypeCheckboxes(
                         false
                     );
-                },
-                1200
-            );
-        } catch (error) {
-            debugError(
-                'Synchronisierung fehlgeschlagen:',
-                error
+
+                    updateSelection();
+                }
             );
 
-            const status =
-                document.getElementById(
-                    'lss-poi-cache-status'
+        document
+            .getElementById(
+                'lss-poi-manager-create'
+            )
+            ?.addEventListener(
+                'click',
+                createSelectedPois
+            );
+    }
+
+    // ============================================================
+    // Ort suchen
+    // ============================================================
+
+    async function searchLocationFromUI() {
+        if (searchRunning) {
+            return;
+        }
+
+        const input =
+            document.getElementById(
+                'lss-poi-manager-location-search'
+            );
+
+        const results =
+            document.getElementById(
+                'lss-poi-manager-location-results'
+            );
+
+        if (
+            !input ||
+            !results
+        ) {
+            return;
+        }
+
+        const query =
+            input.value.trim();
+
+        if (!query) {
+            showStatus(
+                'Bitte einen Ort oder eine Adresse eingeben.',
+                'warning'
+            );
+
+            return;
+        }
+
+        searchRunning =
+            true;
+
+        setLocationLoading(
+            true
+        );
+
+        try {
+            results.innerHTML = `
+                <div class="alert alert-info">
+                    <span class="glyphicon glyphicon-refresh"></span>
+                    Suche Ort über OpenStreetMap...
+                </div>
+            `;
+
+            const locations =
+                await searchLocation(
+                    query
                 );
 
-            if (status) {
-                status.className =
-                    'alert alert-danger';
+            if (
+                !locations.length
+            ) {
+                results.innerHTML = `
+                    <div class="alert alert-warning">
+                        Kein passender Ort gefunden.
+                    </div>
+                `;
 
-                status.innerHTML =
-                    '<strong>Synchronisierung fehlgeschlagen.</strong><br>' +
-                    escapeHtml(
-                        error.message ||
-                        String(error)
-                    );
+                return;
             }
 
-            setSyncProgress(
-                0,
-                'Synchronisierung fehlgeschlagen.'
+            results.innerHTML =
+                locations.map(
+                    (location, index) => `
+                        <div
+                            class="lss-poi-manager-location-result"
+                            data-location-index="${index}"
+                        >
+                            <strong>
+                                ${escapeHtml(
+                                    location.display_name
+                                )}
+                            </strong>
+
+                            <small>
+                                ${escapeHtml(
+                                    location.type ||
+                                    ''
+                                )}
+                                |
+                                ${escapeHtml(
+                                    location.lat
+                                )},
+                                ${escapeHtml(
+                                    location.lon
+                                )}
+                            </small>
+                        </div>
+                    `
+                ).join('');
+
+            results
+                .querySelectorAll(
+                    '.lss-poi-manager-location-result'
+                )
+                .forEach(
+                    element => {
+
+                        element.addEventListener(
+                            'click',
+                            () => {
+
+                                const index =
+                                    Number(
+                                        element.dataset
+                                            .locationIndex
+                                    );
+
+                                selectLocation(
+                                    locations[index]
+                                );
+                            }
+                        );
+                    }
+                );
+
+        } catch (err) {
+            error(
+                'Ortssuche fehlgeschlagen:',
+                err
             );
 
-            showSyncProgress(
-                true
+            showStatus(
+                `Ortssuche fehlgeschlagen: ${err.message}`,
+                'danger'
             );
+
         } finally {
-            if (syncButton) {
-                syncButton.disabled = false;
-            }
+            searchRunning =
+                false;
+
+            setLocationLoading(
+                false
+            );
         }
     }
 
-    function normalizeLSSPois(
-        data
+    // ============================================================
+    // Ort auswählen
+    // ============================================================
+
+    function selectLocation(
+        location
     ) {
-        return data
-            .filter(
-                poi =>
-                    poi &&
-                    poi.id !== undefined &&
-                    poi.latitude !== undefined &&
-                    poi.longitude !== undefined
-            )
-            .map(
-                poi => ({
-                    id: Number(poi.id),
-                    caption:
-                        poi.caption ||
-                        '',
-                    latitude:
-                        Number(
-                            poi.latitude
-                        ),
-                    longitude:
-                        Number(
-                            poi.longitude
-                        ),
-                    poi_type:
-                        Number(
-                            poi.poi_type
-                        ),
-                    icon_path:
-                        poi.icon_path ||
-                        '',
-                    flavour_url:
-                        poi.flavour_url ||
-                        '',
-                    created:
-                        Number(
-                            poi.created ||
-                            0
-                        ),
-                    updated_iso:
-                        poi.updated_iso ||
-                        '',
-                    address:
-                        poi.address ||
-                        '',
-                    caption_address:
-                        poi.caption_address ||
-                        ''
-                })
+        currentLocation = {
+            latitude:
+                Number(
+                    location.lat
+                ),
+
+            longitude:
+                Number(
+                    location.lon
+                ),
+
+            displayName:
+                location.display_name,
+
+            raw:
+                location
+        };
+
+        const results =
+            document.getElementById(
+                'lss-poi-manager-location-results'
             );
+
+        const selected =
+            document.getElementById(
+                'lss-poi-manager-selected-location'
+            );
+
+        if (results) {
+            results.innerHTML = '';
+        }
+
+        if (selected) {
+            selected.style.display =
+                'block';
+
+            selected.innerHTML = `
+                <strong>
+                    ${escapeHtml(
+                        location.display_name
+                    )}
+                </strong>
+
+                <br>
+
+                <small>
+                    ${escapeHtml(
+                        String(
+                            location.lat
+                        )
+                    )},
+                    ${escapeHtml(
+                        String(
+                            location.lon
+                        )
+                    )}
+                </small>
+            `;
+        }
+
+        const button =
+            document.getElementById(
+                'lss-poi-manager-osm-search'
+            );
+
+        if (button) {
+            button.disabled =
+                false;
+        }
+
+        currentResults = [];
+
+        renderTypeList();
+
+        updateStats();
+
+        showStatus(
+            'Ort ausgewählt. Jetzt können die OSM-POIs geladen werden.',
+            'success'
+        );
     }
 
-    // Hintergrund-Synchronisierung
-    function startInitialSync() {
-        debugLog(
-            'Starte erstmalige POI-Synchronisierung.'
+    // ============================================================
+    // OSM-Suche
+    // ============================================================
+
+    async function searchOsmFromUI() {
+        if (
+            !currentLocation
+        ) {
+            showStatus(
+                'Bitte zuerst einen Ort auswählen.',
+                'warning'
+            );
+
+            return;
+        }
+
+        const radiusInput =
+            document.getElementById(
+                'lss-poi-manager-radius'
+            );
+
+        const radius =
+    normalizeRadius(
+        radiusInput?.value
+    );
+
+if (radiusInput) {
+    radiusInput.value =
+        radius;
+}
+
+        setOsmLoading(
+            true
         );
 
-        syncLSSPois(
-            false
-        );
-    }
+        try {
+            showStatus(
+                `Frage Overpass im Radius von ${radius} km ab...`,
+                'info'
+            );
 
-    function startBackgroundSync() {
-        debugLog(
-            'Starte POI-Synchronisierung im Hintergrund.'
-        );
-
-        setTimeout(
-            () => {
-                syncLSSPois(
-                    false
+            const response =
+                await searchOverpass(
+                    currentLocation,
+                    radius
                 );
-            },
-            500
-        );
+
+            log(
+                'Overpass Antwort:',
+                response
+            );
+
+           if (
+    response._lssPoiManagerLimited
+) {
+    showStatus(
+        `Overpass lieferte mehr als ${formatNumber(
+            MAX_OVERPASS_RESULTS
+        )} Objekte. ` +
+        `Es wurden nur die ersten ${formatNumber(
+            MAX_OVERPASS_RESULTS
+        )} verarbeitet. ` +
+        `Verkleinere gegebenenfalls den Suchradius.`,
+        'warning'
+    );
+}
+
+            log(
+                `Nach Mapping: ${currentResults.length} POIs`
+            );
+
+            await checkDuplicates();
+
+            renderTypeList();
+
+            renderOsmResults();
+
+            updateStats();
+
+            const newCount =
+                currentResults.filter(
+                    poi =>
+                        !poi.duplicate
+                ).length;
+
+            let resultMessage =
+    `${formatNumber(
+        currentResults.length
+    )} passende OSM-POIs gefunden, ` +
+    `${formatNumber(
+        newCount
+    )} davon neu.`;
+
+if (
+    response._lssPoiManagerLimited
+) {
+    resultMessage +=
+        ` Die Overpass-Antwort wurde auf ` +
+        `${formatNumber(
+            MAX_OVERPASS_RESULTS
+        )} Objekte begrenzt. ` +
+        `Verkleinere gegebenenfalls den Suchradius.`;
+
+    showStatus(
+        resultMessage,
+        'warning'
+    );
+} else {
+    showStatus(
+        resultMessage,
+        'success'
+    );
+}
+
+        } catch (err) {
+            error(
+                'OSM-Suche fehlgeschlagen:',
+                err
+            );
+
+            showStatus(
+                `OSM-Suche fehlgeschlagen: ${err.message}`,
+                'danger'
+            );
+
+        } finally {
+            setOsmLoading(
+                false
+            );
+        }
     }
 
-    function scheduleBackgroundSync(
-        delay = POST_IMPORT_SYNC_DELAY
-    ) {
-        debugLog(
-            `Hintergrund-Synchronisierung geplant in ${Math.round(
-                delay / 1000
-            )} Sekunden.`
-        );
+    // ============================================================
+    // Duplikate prüfen
+    // ============================================================
 
-        window.setTimeout(
-            () => {
-                debugLog(
-                    'Geplante Hintergrund-Synchronisierung wird ausgeführt.'
-                );
+    async function checkDuplicates() {
+        existingLSSPois =
+            await loadExistingLSSPois();
 
-                syncLSSPois(
-                    false
+        if (
+            !existingLSSPois.length
+        ) {
+            warn(
+                'Keine vorhandenen LSS-POIs verfügbar. Duplikatprüfung nicht möglich.'
+            );
+
+            return;
+        }
+
+        for (
+            const poi of
+            currentResults
+        ) {
+            poi.duplicate =
+                isDuplicate(
+                    poi,
+                    existingLSSPois
                 );
-            },
-            delay
-        );
+        }
     }
 
-    // Fortschritt
-    function showSyncProgress(
-        visible
-    ) {
+    // ============================================================
+    // Typ-Liste
+    // ============================================================
+
+    function getTypeStatistics() {
+        const map =
+            new Map();
+
+        for (
+            const poi of
+            currentResults
+        ) {
+            if (
+                !map.has(
+                    poi.type
+                )
+            ) {
+                map.set(
+                    poi.type,
+                    {
+                        total: 0,
+                        new: 0,
+                        duplicate: 0
+                    }
+                );
+            }
+
+            const entry =
+                map.get(
+                    poi.type
+                );
+
+            entry.total++;
+
+            if (
+                poi.duplicate
+            ) {
+                entry.duplicate++;
+            } else {
+                entry.new++;
+            }
+        }
+
+        return map;
+    }
+
+    function renderTypeList() {
         const container =
             document.getElementById(
-                'lss-poi-sync-progress'
+                'lss-poi-manager-type-list'
             );
 
         if (!container) {
             return;
         }
 
-        container.style.display =
-            visible
-                ? 'block'
-                : 'none';
-    }
+        if (
+            !currentResults.length
+        ) {
+            container.innerHTML = `
+                <div class="alert alert-info">
+                    Noch keine OSM-Daten geladen.
+                </div>
+            `;
 
-    function setSyncProgress(
-        percent,
-        text
-    ) {
-        const bar =
-            document.getElementById(
-                'lss-poi-sync-progress-bar'
+            return;
+        }
+
+        const stats =
+            getTypeStatistics();
+
+        const sorted =
+            [
+                ...stats.entries()
+            ].sort(
+                (a, b) =>
+                    POI_TYPES[a[0]].localeCompare(
+                        POI_TYPES[b[0]],
+                        'de'
+                    )
             );
 
-        const textElement =
+        container.innerHTML =
+            sorted.map(
+                ([type, data]) => `
+                    <div
+                        class="lss-poi-manager-type-row"
+                    >
+
+                        <input
+                            type="checkbox"
+                            class="lss-poi-manager-type-checkbox"
+                            data-type="${type}"
+                            checked
+                        >
+
+                        <span>
+                            ${escapeHtml(
+                                POI_TYPES[type] ||
+                                `POI-Typ ${type}`
+                            )}
+                        </span>
+
+                        <span class="lss-poi-manager-type-count">
+
+                            ${formatNumber(
+                                data.new
+                            )}
+
+                            ${
+                                data.duplicate
+                                ? `<span class="lss-poi-manager-muted">
+                                    / ${formatNumber(
+                                        data.duplicate
+                                    )} vorhanden
+                                </span>`
+                                : ''
+                            }
+
+                        </span>
+
+                    </div>
+                `
+            ).join('');
+
+        container
+            .querySelectorAll(
+                '.lss-poi-manager-type-checkbox'
+            )
+            .forEach(
+                checkbox => {
+
+                    checkbox.addEventListener(
+                        'change',
+                        () => {
+                            updateSelection();
+                        }
+                    );
+                }
+            );
+
+        updateSelection();
+    }
+
+    // ============================================================
+    // Auswahl
+    // ============================================================
+
+    function setAllTypeCheckboxes(
+        checked
+    ) {
+        document
+            .querySelectorAll(
+                '.lss-poi-manager-type-checkbox'
+            )
+            .forEach(
+                checkbox => {
+                    checkbox.checked =
+                        checked;
+                }
+            );
+    }
+
+    function getSelectedTypes() {
+        return new Set(
+            [
+                ...document.querySelectorAll(
+                    '.lss-poi-manager-type-checkbox:checked'
+                )
+            ]
+            .map(
+                checkbox =>
+                    Number(
+                        checkbox.dataset.type
+                    )
+            )
+        );
+    }
+
+    function updateSelection() {
+        const selectedTypes =
+            getSelectedTypes();
+
+        const selected =
+            currentResults.filter(
+                poi =>
+                    selectedTypes.has(
+                        poi.type
+                    ) &&
+                    !poi.duplicate
+            );
+
+        const button =
             document.getElementById(
-                'lss-poi-sync-progress-text'
+                'lss-poi-manager-create'
+            );
+
+        if (button) {
+            button.disabled =
+                creationRunning ||
+                selected.length === 0;
+        }
+
+        const footer =
+            document.getElementById(
+                'lss-poi-manager-footer-info'
+            );
+
+        if (footer) {
+            footer.textContent =
+                `${formatNumber(
+                    selected.length
+                )} POIs zur Erstellung ausgewählt`;
+        }
+    }
+
+    // ============================================================
+    // OSM-Ergebnisse
+    // ============================================================
+
+    function renderOsmResults() {
+        const container =
+            document.getElementById(
+                'lss-poi-manager-results'
+            );
+
+        if (!container) {
+            return;
+        }
+
+        if (
+            !currentResults.length
+        ) {
+            container.style.display =
+                'none';
+
+            return;
+        }
+
+        const selectedTypes =
+            getSelectedTypes();
+
+        const visible =
+            currentResults
+            .filter(
+                poi =>
+                    selectedTypes.has(
+                        poi.type
+                    )
+            )
+            .slice(
+                0,
+                1000
+            );
+
+        container.innerHTML =
+            visible.map(
+                poi => {
+
+                    const status =
+                        poi.duplicate
+                        ? `
+                            <span class="label label-warning">
+                                bereits vorhanden
+                            </span>
+                        `
+                        : `
+                            <span class="label label-success">
+                                neu
+                            </span>
+                        `;
+
+                    return `
+                        <div
+                            class="lss-poi-manager-result"
+                        >
+
+                            <div
+                                class="lss-poi-manager-result-name"
+                            >
+                                ${
+                                    escapeHtml(
+                                        poi.name ||
+                                        poi.typeName
+                                    )
+                                }
+
+                                &nbsp;
+
+                                ${status}
+                            </div>
+
+                            <div>
+                                <span class="label label-default">
+                                    ${escapeHtml(
+                                        poi.typeName
+                                    )}
+                                </span>
+                            </div>
+
+                            <div
+                                class="lss-poi-manager-result-meta"
+                            >
+                                ${
+                                    escapeHtml(
+                                        poi.address ||
+                                        'Keine OSM-Adresse'
+                                    )
+                                }
+                                <br>
+                                ${
+                                    formatDistance(
+                                        poi.distance
+                                    )
+                                }
+                                |
+                                OSM:
+                                ${escapeHtml(
+                                    poi.osmType
+                                )}/
+                                ${escapeHtml(
+                                    poi.osmId
+                                )}
+                                |
+                                ${escapeHtml(
+                                    String(
+                                        poi.latitude
+                                    )
+                                )},
+                                ${escapeHtml(
+                                    String(
+                                        poi.longitude
+                                    )
+                                )}
+                            </div>
+
+                        </div>
+                    `;
+                }
+            ).join('');
+
+        container.style.display =
+            'block';
+
+        if (
+            currentResults.length >
+            1000
+        ) {
+            container.innerHTML += `
+                <div class="alert alert-info">
+                    Es werden maximal 1.000 Ergebnisse angezeigt.
+                    Die Erstellung berücksichtigt trotzdem alle ausgewählten POIs.
+                </div>
+            `;
+        }
+    }
+
+    // ============================================================
+    // Statistik
+    // ============================================================
+
+    function updateStats() {
+    const existing =
+        existingLSSPois.length;
+
+    const found =
+        currentResults.length;
+
+    const duplicate =
+        currentResults.filter(
+            poi =>
+                poi.duplicate
+        ).length;
+
+    const selectedTypes =
+        getSelectedTypes();
+
+    const newPois =
+        currentResults.filter(
+            poi =>
+                !poi.duplicate &&
+                selectedTypes.has(
+                    poi.type
+                )
+        ).length;
+
+    const existingElement =
+        document.getElementById(
+            'lss-poi-manager-existing'
+        );
+
+    const foundElement =
+        document.getElementById(
+            'lss-poi-manager-found'
+        );
+
+    const newElement =
+        document.getElementById(
+            'lss-poi-manager-new'
+        );
+
+    const duplicateElement =
+        document.getElementById(
+            'lss-poi-manager-duplicate'
+        );
+
+    if (existingElement) {
+        existingElement.textContent =
+            formatNumber(
+                existing
+            );
+    }
+
+    if (foundElement) {
+        foundElement.textContent =
+            formatNumber(
+                found
+            );
+    }
+
+    if (newElement) {
+        newElement.textContent =
+            formatNumber(
+                newPois
+            );
+    }
+
+    if (duplicateElement) {
+        duplicateElement.textContent =
+            formatNumber(
+                duplicate
+            );
+    }
+
+    const summary =
+        document.getElementById(
+            'lss-poi-manager-result-summary'
+        );
+
+    if (summary) {
+        if (!found) {
+            summary.innerHTML = `
+                <div class="alert alert-info">
+                    Keine passenden POIs gefunden.
+                </div>
+            `;
+        } else {
+            summary.innerHTML = `
+                <div class="alert alert-info">
+
+                    <strong>
+                        ${formatNumber(found)}
+                    </strong>
+                    passende OSM-Objekte gefunden.
+
+                    Davon:
+
+                    <strong>
+                        ${formatNumber(
+                            duplicate
+                        )}
+                    </strong>
+                    bereits vorhanden und
+
+                    <strong>
+                        ${formatNumber(
+                            newPois
+                        )}
+                    </strong>
+                    neu ausgewählt.
+
+                </div>
+            `;
+        }
+    }
+
+    updateSelection();
+}
+
+    // ============================================================
+    // POIs erstellen
+    // ============================================================
+
+    async function createSelectedPois() {
+        if (
+            creationRunning
+        ) {
+            return;
+        }
+
+        const selectedTypes =
+            getSelectedTypes();
+
+        const selectedPois =
+            currentResults.filter(
+                poi =>
+                    selectedTypes.has(
+                        poi.type
+                    ) &&
+                    !poi.duplicate
+            );
+
+        if (
+            !selectedPois.length
+        ) {
+            showStatus(
+                'Keine neuen POIs ausgewählt.',
+                'warning'
+            );
+
+            return;
+        }
+
+        const confirmed =
+            confirm(
+                `Sollen ${formatNumber(
+                    selectedPois.length
+                )} POIs im Leitstellenspiel erstellt werden?\n\n` +
+                `Bereits vorhandene POIs werden nicht erstellt.`
+            );
+
+        if (!confirmed) {
+            return;
+        }
+
+        creationRunning =
+            true;
+
+        setCreationLoading(
+            true
+        );
+
+        let created = 0;
+        let skipped = 0;
+        let failed = 0;
+
+        const errors = [];
+
+        try {
+            for (
+                let index = 0;
+                index <
+                selectedPois.length;
+                index++
+            ) {
+                const poi =
+                    selectedPois[index];
+
+                updateProgress(
+                    index + 1,
+                    selectedPois.length,
+                    poi
+                );
+
+                try {
+                    await createLSSPoi(
+                        poi
+                    );
+
+                    created++;
+
+                    poi.created =
+                        true;
+
+                } catch (err) {
+                    failed++;
+
+                    errors.push({
+                        poi,
+                        error:
+                            err
+                    });
+
+                    error(
+                        'POI konnte nicht erstellt werden:',
+                        poi,
+                        err
+                    );
+                }
+
+                if (
+                    index <
+                    selectedPois.length - 1
+                ) {
+                    await sleep(
+                        CREATE_REQUEST_DELAY
+                    );
+                }
+            }
+
+            showCreationResult(
+                created,
+                skipped,
+                failed,
+                errors
+            );
+
+            // Neu erstellte POIs als vorhanden markieren.
+            for (
+                const poi of
+                selectedPois
+            ) {
+                if (
+                    poi.created
+                ) {
+                    poi.duplicate =
+                        true;
+                }
+            }
+
+            renderTypeList();
+
+            renderOsmResults();
+
+            updateStats();
+
+        } finally {
+            creationRunning =
+                false;
+
+            setCreationLoading(
+                false
+            );
+        }
+    }
+
+    // ============================================================
+    // Fortschritt
+    // ============================================================
+
+    function updateProgress(
+        current,
+        total,
+        poi
+    ) {
+        const percentage =
+            Math.round(
+                (
+                    current /
+                    total
+                ) *
+                100
+            );
+
+        const bar =
+            document.getElementById(
+                'lss-poi-manager-progress-bar'
+            );
+
+        const text =
+            document.getElementById(
+                'lss-poi-manager-progress-text'
             );
 
         if (bar) {
             bar.style.width =
-                `${percent}%`;
+                `${percentage}%`;
 
             bar.textContent =
-                `${percent}%`;
+                `${percentage}%`;
         }
 
-        if (textElement) {
-            textElement.textContent =
-                text;
+        if (text) {
+            text.textContent =
+                `${formatNumber(
+                    current
+                )} / ${formatNumber(
+                    total
+                )} – ${
+                    poi.name ||
+                    poi.typeName
+                }`;
         }
     }
 
-    // Datenbankinfo
-    async function showDatabaseInfo() {
-        try {
-            const state =
-                await getCacheState();
+    function showCreationResult(
+        created,
+        skipped,
+        failed,
+        errors
+    ) {
+        const messages = [];
 
-            const pois =
-                await getAllPois();
+        messages.push(
+            `<strong>Erstellung abgeschlossen.</strong>`
+        );
 
-            debugLog(
-                'Datenbankstatus:',
-                state
+        messages.push(
+            `Erstellt: <strong>${formatNumber(
+                created
+            )}</strong>`
+        );
+
+        if (skipped) {
+            messages.push(
+                `Übersprungen: <strong>${formatNumber(
+                    skipped
+                )}</strong>`
+            );
+        }
+
+        messages.push(
+            `Fehler: <strong>${formatNumber(
+                failed
+            )}</strong>`
+        );
+
+        if (
+            errors.length
+        ) {
+            messages.push(
+                '<hr>'
             );
 
-            if (DEBUG_DATA) {
-                console.table(
-                    pois.slice(
-                        0,
-                        100
-                    )
-                );
-            }
-
-            const typeCounts =
-                {};
-
-            pois.forEach(
-                poi => {
-                    const type =
-                        poi.poi_type;
-
-                    typeCounts[type] =
-                        (
-                            typeCounts[type] ||
-                            0
-                        ) + 1;
-                }
+            messages.push(
+                '<strong>Fehlerdetails:</strong><br>'
             );
 
-            console.table(
-                Object.entries(
-                    typeCounts
-                ).map(
-                    ([type, count]) => ({
-                        poi_type:
-                            Number(type),
-                        name:
-                            getPoiTypeName(
-                                Number(type)
-                            ),
-                        count
-                    })
+            messages.push(
+                errors
+                .slice(
+                    0,
+                    20
+                )
+                .map(
+                    entry =>
+                        `${escapeHtml(
+                            entry.poi.name ||
+                            entry.poi.typeName
+                        )}: ${escapeHtml(
+                            entry.error?.message ||
+                            String(
+                                entry.error
+                            )
+                        )}`
+                )
+                .join(
+                    '<br>'
                 )
             );
 
-            alert(
-                'LSS POI-Manager\n\n' +
-                `POIs in IndexedDB: ${formatNumber(
-                    state.poiCount
-                )}\n` +
-                `Letzte Synchronisierung: ${
-                    state.lastSync
-                        ? formatDate(
-                            state.lastSync
-                        )
-                        : 'Noch nie'
-                }\n` +
-                `Cache veraltet: ${
-                    state.expired
-                        ? 'Ja'
-                        : 'Nein'
-                }\n` +
-                `LSS POI-Typen erkannt: ${
-                    lssPoiTypes.length
-                }`
+            if (
+                errors.length >
+                20
+            ) {
+                messages.push(
+                    `<br>... und ${
+                        errors.length - 20
+                    } weitere Fehler.`
+                );
+            }
+        }
+
+        showStatus(
+            messages.join(
+                '<br>'
+            ),
+            failed
+            ? 'warning'
+            : 'success',
+            true
+        );
+    }
+
+    // ============================================================
+    // Status
+    // ============================================================
+
+    function showStatus(
+        message,
+        type = 'info',
+        html = false
+    ) {
+        const element =
+            document.getElementById(
+                'lss-poi-manager-status'
             );
-        } catch (error) {
-            debugError(
-                'Fehler beim Ermitteln der Datenbankinfo:',
-                error
+
+        if (!element) {
+            return;
+        }
+
+        element.className =
+            `alert alert-${type}`;
+
+        if (html) {
+            element.innerHTML =
+                message;
+        } else {
+            element.textContent =
+                message;
+        }
+    }
+
+    // ============================================================
+    // Loading
+    // ============================================================
+
+    function setLocationLoading(
+        loading
+    ) {
+        const button =
+            document.getElementById(
+                'lss-poi-manager-location-button'
+            );
+
+        if (!button) {
+            return;
+        }
+
+        button.disabled =
+            loading;
+
+        button.innerHTML =
+            loading
+            ? `
+                <span class="glyphicon glyphicon-refresh"></span>
+                Suche...
+            `
+            : `
+                <span class="glyphicon glyphicon-search"></span>
+                Ort suchen
+            `;
+    }
+
+    function setOsmLoading(
+        loading
+    ) {
+        const button =
+            document.getElementById(
+                'lss-poi-manager-osm-search'
+            );
+
+        if (!button) {
+            return;
+        }
+
+        button.disabled =
+            loading ||
+            !currentLocation;
+
+        button.innerHTML =
+            loading
+            ? `
+                <span class="glyphicon glyphicon-refresh"></span>
+                OSM wird geladen...
+            `
+            : `
+                <span class="glyphicon glyphicon-globe"></span>
+                OSM-POIs laden
+            `;
+    }
+
+    function setCreationLoading(
+        loading
+    ) {
+        const button =
+            document.getElementById(
+                'lss-poi-manager-create'
+            );
+
+        if (button) {
+            button.disabled =
+                loading;
+
+            button.innerHTML =
+                loading
+                ? `
+                    <span class="glyphicon glyphicon-refresh"></span>
+                    POIs werden erstellt...
+                `
+                : `
+                    <span class="glyphicon glyphicon-plus"></span>
+                    POIs im LSS erstellen
+                `;
+        }
+
+        const progress =
+            document.getElementById(
+                'lss-poi-manager-progress'
+            );
+
+        if (progress) {
+            progress.style.display =
+                loading
+                ? 'block'
+                : 'none';
+        }
+    }
+
+    // ============================================================
+    // Modal öffnen
+    // ============================================================
+
+    async function openPoiManager() {
+    createModal();
+
+    if (
+        typeof window.jQuery !==
+            'undefined' &&
+        typeof window.jQuery.fn.modal ===
+            'function'
+    ) {
+        window.jQuery(
+            modal
+        ).modal(
+            'show'
+        );
+    } else {
+        modal.style.display =
+            'block';
+
+        modal.classList.add(
+            'in'
+        );
+    }
+
+    if (!existingLSSPois.length) {
+        try {
+            existingLSSPois =
+                await loadExistingLSSPois();
+
+            log(
+                `Beim Öffnen ${existingLSSPois.length} vorhandene LSS-POIs geladen.`
+            );
+
+        } catch (err) {
+            warn(
+                'Vorhandene LSS-POIs konnten beim Öffnen nicht geladen werden:',
+                err
             );
         }
     }
 
-    function getPoiTypeName(
-        id
-    ) {
-        const type =
-            lssPoiTypes.find(
-                poiType =>
-                    poiType.id === id
+    updateStats();
+}
+
+    // ============================================================
+    // Initialisierung
+    // ============================================================
+
+    function init() {
+        log(
+            'POI-Manager 0.5.0 wird initialisiert.'
+        );
+
+        if (
+            !addPoiManagerButton()
+        ) {
+            const observer =
+                new MutationObserver(
+                    () => {
+
+                        if (
+                            addPoiManagerButton()
+                        ) {
+                            observer.disconnect();
+                        }
+                    }
+                );
+
+            observer.observe(
+                document.body,
+                {
+                    childList: true,
+                    subtree: true
+                }
             );
 
-        return type
-            ? type.name
-            : `Unbekannt (${id})`;
-    }
+            setTimeout(
+                () => {
+                    observer.disconnect();
+                },
+                30000
+            );
+        }
 
-    // Hilfsfunktionen
-    function formatNumber(
-        value
-    ) {
-        return Number(
-            value || 0
-        ).toLocaleString(
-            'de-DE'
+        log(
+            'POI-Manager 0.5.0 bereit.'
         );
     }
 
-    function formatDate(
-        timestamp
-    ) {
-        return new Date(
-            timestamp
-        ).toLocaleString(
-            'de-DE',
-            {
-                dateStyle: 'short',
-                timeStyle: 'medium'
-            }
-        );
-    }
-
-    function escapeHtml(
-        value
-    ) {
-        return String(
-            value
-        )
-            .replace(
-                /&/g,
-                '&amp;'
-            )
-            .replace(
-                /</g,
-                '&lt;'
-            )
-            .replace(
-                />/g,
-                '&gt;'
-            )
-            .replace(
-                /"/g,
-                '&quot;'
-            )
-            .replace(
-                /'/g,
-                '&#039;'
-            );
-    }
+    init();
 
 })();
