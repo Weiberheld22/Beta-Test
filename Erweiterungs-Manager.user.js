@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         [LSS] Erweiterungs-Manager
+// @name         [LSS] 02 -  Erweiterungs-Manager
 // @namespace    http://tampermonkey.net/
-// @version      1.5
+// @version      1.6
 // @description  Ermöglicht das einfache Verwalten und Bauen von fehlenden Erweiterungen, Lagerräumen und Ausbaustufen für eigene Wachen/Gebäude sowie Verbandsgebäude.
 // @author       Caddy21
 // @match        https://www.leitstellenspiel.de/
@@ -406,8 +406,8 @@
     let currentCoins = 0;
     let allianceInfo = null;
     let allianceBuildingsData = [];
-    let currentView = 'personal'; 
-    
+    let currentView = 'personal';
+
     const buildingCountLimits = {
         0: {
             9: {
@@ -792,7 +792,7 @@
             color: 'var(--text-color, #000)',
             borderRadius: '10px',
             maxWidth: '900px',
-            height: 'calc(100vh - 60px)',
+            height: 'calc(100vh - 80px)',
             display: 'flex',
             flexDirection: 'column',
             overflow: 'hidden',
@@ -1800,18 +1800,26 @@
 
     // Funktion um die Ausbaustufen zu ermitteln
     function getBuildingLevelInfo(building) {
-        const type = building.building_type;
-        const size = building.small_building ? 'small' : 'normal';
-        const key = `${type}_${size}`;
-        const levelData = manualLevels[key];
-        if (!levelData) return null;
-        
-        const currentLevel = (typeof building.level === 'number' && building.level >= 0) ? building.level : -1;
-        const current = currentLevel >= 0 ? levelData.find(l => l.id === currentLevel) : null;
-        const next = currentLevel >= 0 ? levelData.find(l => l.id === currentLevel + 1) : levelData[0];
+    const type = building.building_type;
+    const size = building.small_building ? 'small' : 'normal';
+    const key = `${type}_${size}`;
+    const levelData = manualLevels[key];
+    if (!levelData) return null;
 
-        return { current, next, currentLevel };
-    }
+    const currentLevel = typeof building.level === 'number' && building.level >= 0
+        ? building.level
+        : -1;
+
+    const current = currentLevel >= 0
+        ? levelData.find(l => Number(l.id) === currentLevel)
+        : null;
+
+    const next = currentLevel >= 0
+        ? levelData.find(l => Number(l.id) === currentLevel + 1)
+        : levelData[0];
+
+    return { current, next, currentLevel };
+}
 
     // Funktion um die aktuelle Credits und Coins des Users abzurufen
     async function getUserCredits() {
@@ -2414,7 +2422,7 @@
         for (let i = 0; i < selectedStorages.length; i++) {
             const storageId = selectedStorages[i];
             const requiredIndex = storageOrder.indexOf(storageId);
-            if (requiredIndex === -1) continue; 
+            if (requiredIndex === -1) continue;
 
             const missing = storageOrder
             .slice(0, requiredIndex)
@@ -3597,14 +3605,13 @@
             globalLevelSelect.selectedIndex = 0; // Zurücksetzen auf Platzhalter
         });
 
-        // --- Zusammen in die Tabellenzelle ---
+        // Zusammen in die Tabellenzelle
         clearLevelsTh.appendChild(clearLevelsBtn);
         clearLevelsTh.appendChild(globalLevelSelect);
 
         // In Zeile einfügen
         filterRow.appendChild(clearLevelsTh);
         filterRow.appendChild(document.createElement('th'));
-
 
         // Reset Button
         const resetTh = document.createElement('th');
@@ -3626,7 +3633,7 @@
 
         thead.appendChild(filterRow);
 
-        // --- Filterfunktion ---
+        // Filterfunktion
         function applyFilters() {
             const selectedLeitstelle = leitstelleFilter.select.value;
             const selectedWache = wacheFilter.select.value;
@@ -3645,7 +3652,7 @@
             });
         }
 
-        // --- Tabellenzeilen aufbauen (dein Originalcode vereinfacht) ---
+        // Tabellenzeilen aufbauen
         group.forEach(({ building }) => {
             const levelInfo = getBuildingLevelInfo(building);
             if (!levelInfo) return;
@@ -3658,7 +3665,7 @@
             const levelList = manualLevels[key];
             if (!levelList) return;
 
-            const maxLevel = levelList.length;
+            const maxLevel = Math.max(...levelList.map(level => Number(level.id)));
             if (currentLevel >= maxLevel) return;
 
             selectedLevels[building.id] = null;
@@ -3840,7 +3847,7 @@
         });
 
 
-        // --- Eventlistener auf Filter setzen ---
+        // Eventlistener auf Filter setzen
         leitstelleFilter.select.addEventListener('change', applyFilters);
         wacheFilter.select.addEventListener('change', applyFilters);
         ausbaustufeFilter.select.addEventListener('change', applyFilters);
@@ -4313,53 +4320,48 @@
         });
     }
     async function buildLevel(buildingId, currency, level) {
+        const buildLevel = Number(level) - 1;
+        const url = `/buildings/${buildingId}/expand_do/${currency}?level=${buildLevel}`;
         const csrfToken = getCSRFToken();
-        const initialUrl = `/buildings/${buildingId}/expand_do/${currency}?level=${level}`;
 
         function doGetRequest(url) {
             return new Promise((resolve, reject) => {
                 GM_xmlhttpRequest({
                     method: 'GET',
-                    url: url,
+                    url,
                     withCredentials: true,
                     headers: {
                         'X-CSRF-Token': csrfToken,
                         'Content-Type': 'application/x-www-form-urlencoded'
                     },
-                    onload: (response) => resolve(response),
-                    onerror: (error) => reject(error)
+                    onload: resolve,
+                    onerror: reject
                 });
             });
         }
 
         try {
-            const response1 = await doGetRequest(initialUrl);
-
-            if (response1.status === 302) {
-                // Redirect URL auslesen
-                const locationHeader = (response1.responseHeaders.match(/location:\s*(.+)/i) || [])[1];
+            const response = await doGetRequest(url);
+            if (response.status === 302) {
+                const locationHeader = (response.responseHeaders.match(/location:\s*(.+)/i) || [])[1];
                 if (!locationHeader) throw new Error('Redirect ohne Location-Header');
 
                 const redirectUrl = locationHeader.trim();
-
-                // Zweite Anfrage an Redirect-URL
                 const response2 = await doGetRequest(redirectUrl);
 
-                if (response2.status >= 200 && response2.status < 400) {
-                    return response2;
-                } else {
-                    throw new Error(`Fehler nach Redirect: Status ${response2.status}`);
-                }
-            } else if (response1.status >= 200 && response1.status < 400) {
-                return response1;
-            } else {
-                throw new Error(`Fehler beim Ausbau: Status ${response1.status}`);
+                if (response2.status >= 200 && response2.status < 400) return response2;
+                throw new Error(`Fehler nach Redirect: Status ${response2.status}`);
             }
+
+            if (response.status >= 200 && response.status < 400) return response;
+
+            throw new Error(`Fehler beim Ausbau: Status ${response.status}`);
         } catch (err) {
             console.error(err);
             throw err;
         }
     }
+
     // ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
     // Anfang der Funktion für * Bau von ausgewählten Erweiterungen *
@@ -5241,7 +5243,6 @@
                 buildingCoins
             });
         }
-
         if (levelRows.length === 0) {
             alert("Keine Leveländerungen ausgewählt.");
             return;
@@ -5392,13 +5393,12 @@
             const progress = showProgress();
             let done = 0;
 
-            // Einfach bauen ohne einzeln zu prüfen - Gesamtprüfung erfolgt vorher
             for (const lvl of levelRows) {
                 await buildLevel(lvl.buildingId, 'credits', lvl.targetLevel);
+                delete selectedLevels[lvl.buildingId];
                 done++;
                 progress.update(done);
             }
-
             progress.close();
             document.body.removeChild(selectionDiv);
 
@@ -5424,12 +5424,13 @@
 
             for (const lvl of levelRows) {
                 await buildLevel(lvl.buildingId, 'coins', lvl.targetLevel);
+                delete selectedLevels[lvl.buildingId];
                 done++;
                 progress.update(done);
             }
 
             progress.close();
-            document.body.removeChild(selectionDiv);
+            selectionDiv.remove();
 
             initUserCredits();
             fetchBuildingsAndRender();
@@ -6815,4 +6816,5 @@
 
     // Initiale Aufrufe
     addMenuButton();
+
 })();
