@@ -909,12 +909,53 @@
     // Lädt das aktive Profil einer Wache
     function getBuildingActiveProfile(buildingId, buildingKey) {
         try {
-            const raw = localStorage.getItem(`fm-config-building-profile-${buildingId}`);
-            if (!raw) return loadProfiles(buildingKey).activeProfile; // Fallback
+            const profilesData = loadProfiles(buildingKey);
+            const profiles = profilesData.profiles || {};
+
+            const raw = localStorage.getItem(
+                `fm-config-building-profile-${buildingId}`
+            );
+
+            // Keine individuelle Zuordnung vorhanden
+            if (!raw) {
+                return profilesData.activeProfile || null;
+            }
+
             const data = JSON.parse(raw);
-            return data.profileName || loadProfiles(buildingKey).activeProfile;
-        } catch {
-            return loadProfiles(buildingKey).activeProfile;
+            const profileName = data?.profileName;
+
+            // Keine gültige Profilzuordnung vorhanden
+            if (!profileName) {
+                return profilesData.activeProfile || null;
+            }
+
+            // Profil existiert noch
+            if (
+                Object.prototype.hasOwnProperty.call(
+                    profiles,
+                    profileName
+                )
+            ) {
+                return profileName;
+            }
+
+            // Profil wurde gelöscht -> alte Zuordnung entfernen
+            localStorage.removeItem(
+                `fm-config-building-profile-${buildingId}`
+            );
+
+            // Auf das aktuell aktive Profil des Gebäudetyps zurückfallen
+            return profilesData.activeProfile || null;
+
+        } catch (e) {
+            console.warn(
+                '[FM][Config] Fehler beim Laden des Wachenprofils:',
+                buildingId,
+                buildingKey,
+                e
+            );
+
+            return loadProfiles(buildingKey).activeProfile || null;
         }
     }
 
@@ -1087,12 +1128,9 @@
         setTimeout(() => {
             const container = document.getElementById(`fm-config-table-${tableId}`);
             if (!container) return;
-
             const wrapper = container.parentElement;
             if (!wrapper || wrapper.dataset.eventsAttached) return;
-
             wrapper.dataset.eventsAttached = 'true';
-
             let profilesData = loadProfiles(tableId);
             let currentProfile = profilesData.activeProfile;
             let currentConfig = getActiveProfileConfig(tableId) || [];
@@ -1121,13 +1159,11 @@
 
                 return config;
             }
-
             function saveAndSync() {
                 currentConfig = getCurrentConfigFromDOM();
                 saveActiveProfileConfig(tableId, currentConfig);
                 updateHeaderCount();
             }
-
             function updateHeaderCount() {
                 let totalVehicles = 0;
                 let totalEquipment = 0;
@@ -1168,7 +1204,6 @@
                     (totalEquipment ? ` – ${totalEquipment} RCs` : '') +
                     profileText;
             }
-
             function reRenderAndSync() {
                 const openCategory =
                       wrapper.querySelector(
@@ -1217,7 +1252,6 @@
                     saveAndSync();
                 }
             });
-
             wrapper.addEventListener('change', e => {
                 if (e.target.classList.contains('fm-profile-select')) {
                     profilesData = loadProfiles(tableId);
@@ -1235,7 +1269,6 @@
                     reRenderAndSync();
                     return;
                 }
-
                 if (e.target.classList.contains('fm-config-select')) {
                     const cell = e.target.closest('.fm-config-cell');
                     if (!cell) return;
@@ -1244,10 +1277,7 @@
                     saveAndSync();
                 }
             });
-
             wrapper.addEventListener('click', e => {
-                /* ==================== SPOILER ==================== */
-
                 const categoryHeader = e.target.closest('.fm-config-category-header');
 
                 if (categoryHeader) {
@@ -1291,9 +1321,6 @@
 
                     return;
                 }
-
-                /* ==================== PROFIL ANLEGEN ==================== */
-
                 if (e.target.classList.contains('fm-profile-saveas')) {
                     const newName = prompt('Name des neuen Profils:')?.trim();
 
@@ -1332,9 +1359,6 @@
                     reRenderAndSync();
                     return;
                 }
-
-                /* ==================== PROFIL LÖSCHEN ==================== */
-
                 if (e.target.classList.contains('fm-profile-delete')) {
                     profilesData = loadProfiles(tableId);
 
@@ -1343,12 +1367,48 @@
                     if (!active) return;
                     if (!confirm(`Profil "${active}" löschen?`)) return;
 
+                    // Profil löschen
                     delete profilesData.profiles[active];
 
+                    // Neues aktives Profil bestimmen
                     const remaining = Object.keys(profilesData.profiles || {});
                     profilesData.activeProfile = remaining[0] || null;
 
+                    // Profile speichern
                     saveProfiles(tableId, profilesData);
+
+                    // Alle Wachen-Zuordnungen zu diesem gelöschten Profil entfernen
+                    const prefix = 'fm-config-building-profile-';
+
+                    for (let i = localStorage.length - 1; i >= 0; i--) {
+                        const key = localStorage.key(i);
+
+                        if (!key || !key.startsWith(prefix)) {
+                            continue;
+                        }
+
+                        try {
+                            const raw = localStorage.getItem(key);
+                            if (!raw) continue;
+
+                            const assignment = JSON.parse(raw);
+
+                            if (
+                                assignment &&
+                                assignment.buildingKey === tableId &&
+                                assignment.profileName === active
+                            ) {
+                                localStorage.removeItem(key);
+                            }
+
+                        } catch (err) {
+                            console.warn(
+                                '[FM][Config] Fehler beim Bereinigen der Profilzuordnung:',
+                                key,
+                                err
+                            );
+                        }
+                    }
 
                     currentProfile = profilesData.activeProfile;
                     currentConfig = getActiveProfileConfig(tableId) || [];
@@ -1356,9 +1416,6 @@
                     reRenderAndSync();
                     return;
                 }
-
-                /* ==================== ALLE AN-/ABWÄHLEN ==================== */
-
                 if (
                     e.target.classList.contains('fm-config-select-all') ||
                     e.target.classList.contains('fm-config-deselect-all')
@@ -1377,9 +1434,6 @@
                     saveAndSync();
                     return;
                 }
-
-                /* ==================== ABGEWÄHLTE EIN-/AUSBLENDEN ==================== */
-
                 if (e.target.classList.contains('fm-config-toggle')) {
                     const hidden = e.target.dataset.hidden === 'true';
                     const newState = !hidden;
@@ -1400,10 +1454,8 @@
                     return;
                 }
             });
-
             updateHeaderCount();
         }, 0);
-
         return html;
     }
 
@@ -2106,6 +2158,19 @@
 
         const profilesData = loadProfiles(buildingKey);
         const config = profilesData.profiles[activeProfile] || [];
+        console.log(
+            '[FM][Config-Test]',
+            {
+                buildingId: building.id,
+                building: building.caption,
+                buildingKey,
+                activeProfile,
+                configExists: !!profilesData.profiles[activeProfile],
+                configLength: config.length,
+                checked: config.filter(c => c.checked).length,
+                config: config
+            }
+        );
 
         let totalCredits = 0;
         let totalCoins = 0;
@@ -2249,6 +2314,19 @@
         const activeProfile = getBuildingActiveProfile(building.id, buildingKey);
         const profilesData = loadProfiles(buildingKey);
         const config = profilesData.profiles[activeProfile] || [];
+        console.log(
+            '[FM][Config-Test]',
+            {
+                buildingId: building.id,
+                building: building.caption,
+                buildingKey,
+                activeProfile,
+                configExists: !!profilesData.profiles[activeProfile],
+                configLength: config.length,
+                checked: config.filter(c => c.checked).length,
+                config: config
+            }
+        );
 
         const missing = [];
         const missingVehicleIds = [];
@@ -3149,41 +3227,17 @@
             }
 
             if (cancelRequested) {
-                if (
-                    progressText &&
-                    spinner
-                ) {
-                    progressText.textContent =
-                        `Der Kauf wurde abgebrochen. ` +
-                        `Es wurden ${boughtCount} Käufe durchgeführt.`;
-
-                    spinner.textContent = '⛔';
-                }
-
-                await new Promise(
-                    r => setTimeout(r, 5000)
-                );
-
-            } else if (
-                progressText &&
-                spinner
-            ) {
-                progressText.textContent =
-                    `Kauf abgeschlossen (${boughtCount} Käufe)`;
-
-                spinner.textContent = '✅';
-            }
-
+                if (progressText && spinner) {
+                    progressText.textContent = `Der Kauf wurde abgebrochen. ` + `Es wurden ${boughtCount} Käufe durchgeführt.`; spinner.textContent = '⛔';}
+                await new Promise( r => setTimeout(r, 5000));
+            } else if (progressText && spinner) {progressText.textContent = `Kauf abgeschlossen (${boughtCount} Käufe)`; spinner.textContent = '✅';}
             await loadBuildingsFromAPI();
             updateUserResources();
             updateSelectedCosts();
-
         } finally {
             setAllButtonsDisabled(false);
-
             if (container) {
                 container.style.opacity = '0';
-
                 setTimeout(() => {
                     container.style.display = 'none';
                     container.innerHTML = '';
@@ -3226,7 +3280,7 @@
                 const now = Date.now();
                 localStorage.setItem('fm-purchase-log', JSON.stringify([]));
                 localStorage.setItem('fm-purchase-log-reset', now.toString());
-                showPurchaseLog(); // Aktualisiere die Anzeige sofort
+                showPurchaseLog();
             }
         }
     }); // Resetbutton
@@ -3254,18 +3308,13 @@
     document.addEventListener('click', async e => {
         if (e.target && (e.target.classList.contains('fm-buy-credit') || e.target.classList.contains('fm-buy-coin'))) {
             e.preventDefault();
-
             const row = e.target.closest('tr');
             if (!row) return;
-
             const isCoins = e.target.classList.contains('fm-buy-coin');
             if (isCoins && !confirmCoinPurchase()) return;
-
             const currency = isCoins ? 'coins' : 'credits';
             let cancelRequested = false;
             const controller = new AbortController();
-
-            // Progressbar erzeugen
             const container = document.getElementById('fm-progress-container');
             container.style.display = 'block';
             container.style.padding = '8px';
@@ -3273,7 +3322,6 @@
             container.style.borderRadius = '6px';
             container.style.background = 'rgba(0,0,0,0.1)';
             container.style.opacity = '1';
-
             container.innerHTML = `
             <div style="margin-bottom:6px;">
                 <span id="fm-spinner">⏳</span>
@@ -3286,16 +3334,11 @@
                 <button id="fm-cancel-btn" class="btn btn-warning btn-xs">⛔ Abbrechen</button>
             </div>
         `;
-
-            // Warten, bis DOM aktualisiert ist
             await new Promise(r => setTimeout(r, 0));
-
             const progressText = document.getElementById('fm-progress-text');
             const progressBar = document.getElementById('fm-progress-bar');
             const spinner = document.getElementById('fm-spinner');
             const cancelBtn = document.getElementById('fm-cancel-btn');
-
-            // Cancel-Button Logik
             cancelBtn.onclick = () => {
                 cancelRequested = true;
                 controller.abort();
@@ -3303,28 +3346,20 @@
                 cancelBtn.textContent = 'Wird abgebrochen...';
                 spinner.textContent = '⛔';
             };
-
-            // Buttons sperren, Cancel-Button ausgenommen
             const setAllButtonsDisabled = (disabled, excludeBtn = null) => {
                 document.querySelectorAll('button').forEach(btn => {
                     if (btn !== excludeBtn) btn.disabled = disabled;
                 });
             };
             setAllButtonsDisabled(true, cancelBtn);
-
             try {
                 await buyVehicles([row], currency, false, controller, progressText, progressBar, spinner, cancelBtn);
             } finally {
-                // Nach Abbruch oder Abschluss
                 if (cancelRequested) {
-                    // 3 Sekunden warten, damit Server aktualisiert
                     await new Promise(r => setTimeout(r, 3000));
                 }
-
-                // Gebäude & Kosten aktualisieren
                 await loadBuildingsFromAPI();
                 updateSelectedCosts();
-
                 setAllButtonsDisabled(false);
                 container.style.opacity = '0';
                 setTimeout(() => container.style.display = 'none', 300);
@@ -3334,26 +3369,20 @@
     document.addEventListener('click', async e => {
         if (e.target && (e.target.classList.contains('fm-buy-selected-credits') || e.target.classList.contains('fm-buy-selected-coins'))) {
             e.preventDefault();
-
             const table = e.target.closest('table');
             if (!table) return;
-
             const isCoins = e.target.classList.contains('fm-buy-selected-coins');
             if (isCoins && !confirmCoinPurchase()) return;
-
             const currency = isCoins ? 'coins' : 'credits';
             const selectedRows = [...table.querySelectorAll('tbody tr input.fm-select:checked')]
             .map(cb => cb.closest('tr'));
-
             if (selectedRows.length === 0) {
                 alert('Bitte mindestens eine Wache auswählen.');
                 return;
             }
-
             await buyVehicles(selectedRows, currency, true);
         }
     }); // Sammelkauf
-    // Tabellen nach Schließen des Config-Modals aktualisieren
     $(document).on('hidden.bs.modal', '#fahrzeugConfigModal', async function () {
         if (!document.getElementById('fahrzeugManagerModal')) return;
         try {
@@ -3373,8 +3402,6 @@
                     });
                 });
             });
-
-            // Checkbox-Listener für Kosten aktualisieren
             setTimeout(() => {
                 document.querySelectorAll('.fm-table').forEach(table => {
                     const allCheckbox = table.querySelector('.fm-select-all');
@@ -3421,12 +3448,11 @@
             updateSelectedCosts();
             updateBuyButtons();
         } catch (e) {}
-    });
+    }); // Tabellen nach Schließen des Config-Modals aktualisieren
     $(document).on('shown.bs.modal', '#fahrzeugManagerModal', function () {
         document.querySelectorAll('.fm-select').forEach(cb => cb.checked = false);
         document.getElementById('fm-costs-credits').textContent = '0';
         document.getElementById('fm-costs-coins').textContent = '0';
-
         updateUserResources();
         loadBuildingsFromAPI();
     });
