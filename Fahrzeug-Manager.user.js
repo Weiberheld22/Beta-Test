@@ -605,31 +605,43 @@
     // Nach Typ gruppieren und Spoiler bauen
     function buildBuildingsByType(buildings, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
         const grouped = {};
+
         buildings.forEach(b => {
             const typeName = getBuildingTypeName(b);
-            if(!typeName) return;
-            if(!grouped[typeName]) grouped[typeName]=[];
+            if (!typeName) return;
+
+            if (!grouped[typeName]) {
+                grouped[typeName] = [];
+            }
+
             grouped[typeName].push(b);
         });
 
-        let html='';
+        let html = '';
+
         Object.keys(buildingTypeNames).forEach((key, idx) => {
             const typeName = buildingTypeNames[key];
-            if(grouped[typeName]){
+
+            if (grouped[typeName]) {
                 const filteredBuildings = grouped[typeName].filter(b => {
                     const vehiclesCount = (vehicleMap[b.id] || []).length;
                     const maxVehicles = calcMaxParkingLots(b, lssmBuildingDefs);
-                    return vehiclesCount < maxVehicles;
+                    const hasFreeVehicleSlot = vehiclesCount < maxVehicles;
+                    const hasFreeStorage = Number(b.storage_available || 0) > 0;
+
+                    return hasFreeVehicleSlot || hasFreeStorage;
                 });
-                if(filteredBuildings.length > 0) {
-                    html+=
+
+                if (filteredBuildings.length > 0) {
+                    html +=
                         `<div class="fm-spoiler">
-                         <div class="fm-spoiler-header" data-target="fm-spoiler-body-${idx}">${typeName}</div>
-                         <div id="fm-spoiler-body-${idx}" class="fm-spoiler-body">${buildFahrzeugTable(filteredBuildings, idx, vehicleMap, vehicleTypeMap, lssmBuildingDefs)}</div>
-                         </div>`;
+                     <div class="fm-spoiler-header" data-target="fm-spoiler-body-${idx}">${typeName}</div>
+                     <div id="fm-spoiler-body-${idx}" class="fm-spoiler-body">${buildFahrzeugTable(filteredBuildings, idx, vehicleMap, vehicleTypeMap, lssmBuildingDefs)}</div>
+                     </div>`;
                 }
             }
         });
+
         return html;
     }
 
@@ -977,9 +989,9 @@
         const firstStart = !hasProfiles;
         const categories = {
             fahrzeuge: { title: '🚒 Fahrzeuge', items: [] },
-            ab: { title: '🚛 AB-Rollcontainer', items: [] },
-            anhaenger: { title: '🛻 Anhänger', items: [] },
-            rc: { title: '📦 RC', items: [] }
+            ab: { title: '🚛 Abrollbehälter', items: [] },
+            anhaenger: { title: '🛻 Anhänger / Außenlastbehälter / Winden', items: [] },
+            rc: { title: '📦 Rollcontainer', items: [] }
         };
 
         let migratedProfileConfig = false;
@@ -1166,31 +1178,38 @@
             }
             function updateHeaderCount() {
                 let totalVehicles = 0;
+                let totalAB = 0;
+                let totalTrailers = 0;
                 let totalEquipment = 0;
 
                 currentConfig.forEach(entry => {
                     if (!entry.checked) return;
-
                     const amount = parseInt(entry.amount, 10) || 0;
-
-                    if ((entry.itemType || 'vehicle') === 'equipment') {
+                    const itemType = entry.itemType || 'vehicle';
+                    if (itemType === 'equipment') {
                         totalEquipment += amount;
-                    } else {
-                        totalVehicles += amount;
+                        return;
                     }
+                    const vehicle = vehicles.find(v => String(v.id) === String(entry.typeId));
+                    if (!vehicle) return;
+                    if (vehicle.isTrailer === true) {
+                        const tractiveVehicles = Array.isArray(vehicle.tractiveVehicles)
+                        ? vehicle.tractiveVehicles
+                        : [];
+                        if (tractiveVehicles.includes(46)) {
+                            totalAB += amount;
+                        } else {
+                            totalTrailers += amount;
+                        }
+                        return;
+                    }
+                    totalVehicles += amount;
                 });
-
-                const header = document.querySelector(
-                    `[data-target="fm-config-body-${tableId}"]`
-                );
-
+                const header = document.querySelector(`[data-target="fm-config-body-${tableId}"]`);
                 if (!header) return;
-
                 profilesData = loadProfiles(tableId);
                 currentProfile = profilesData.activeProfile;
-
                 const names = Object.keys(profilesData.profiles || {});
-
                 const profileText = names.length
                 ? ` (${names.map(name =>
                                  name === currentProfile
@@ -1198,10 +1217,14 @@
                                  : name
                                 ).join(' | ')})`
                 : '';
-
+                let counts = [];
+                if (totalVehicles) {counts.push(`${totalVehicles} Fahrzeuge`);}
+                if (totalAB) {counts.push(`${totalAB} Abrollbehälter`);}
+                if (totalTrailers) {counts.push(`${totalTrailers} Anhänger / Außenlastbehälter / Winden`);}
+                if (totalEquipment) {counts.push(`${totalEquipment} Rollcontainer`);}
                 header.innerHTML =
-                    `${buildingCaption} – ${totalVehicles} Fahrzeuge` +
-                    (totalEquipment ? ` – ${totalEquipment} RCs` : '') +
+                    `${buildingCaption}` +
+                    (counts.length ? ` – ${counts.join(' – ')}` : '') +
                     profileText;
             }
             function reRenderAndSync() {
@@ -1463,11 +1486,9 @@
     function buildFahrzeugTable(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs, filters = {}) {
         const filterLeitstelle = filters.leitstelle || '';
         const filterWache = filters.wache || '';
-
         const leitstellen = [...new Set(
             buildings.map(b => b.leitstelle_caption).filter(Boolean)
         )].sort((a, b) => a.localeCompare(b, 'de'));
-
         const wachen = [...new Set(
             buildings.map(b => b.caption).filter(Boolean)
         )].sort((a, b) => a.localeCompare(b, 'de'));
@@ -1553,10 +1574,6 @@
             if (filterWache && b.caption !== filterWache) return;
 
             const vehiclesOnBuilding = vehicleMap[b.id] || [];
-
-            // =========================================================
-            // Fahrzeuge auf der Wache
-            // =========================================================
             const typeCountMapOnBuilding = {};
 
             vehiclesOnBuilding.forEach(v => {
@@ -1579,11 +1596,7 @@
                 typeCountMapOnBuilding[key].count++;
             });
 
-            // =========================================================
-            // RCs auf der Wache
-            // =========================================================
-            const buildingEquipment =
-                  equipmentMapGlobal[b.id] || {};
+            const buildingEquipment = equipmentMapGlobal[b.id] || {};
 
             Object.entries(buildingEquipment).forEach(([equipmentId, count]) => {
                 const equipment = getEquipmentById(equipmentId);
@@ -1607,17 +1620,13 @@
                 : item.name;
 
                 if (item.type === 'equipment') {
-                    return `<span style="color:brown;"
-                                  title="Rollcontainer">${displayName}</span>`;
+                    return `<span title="Rollcontainer">${displayName}</span>`;
                 }
 
                 return displayName;
             })
             .join(',<wbr> ') || 'Keine Fahrzeuge / RCs auf Wache vorhanden';
 
-            // =========================================================
-            // Profil
-            // =========================================================
             const configKey =
                   `${b.building_type}_${b.small_building ? 'small' : 'normal'}`;
 
@@ -1629,9 +1638,8 @@
             ? getBuildingActiveProfile(b.id, configKey)
             : null;
 
-            // =========================================================
-            // Fehlende Fahrzeuge / RCs
-            // =========================================================
+            const storageFree = Number(b.storage_available || 0);
+
             const missingData = getMissingVehiclesForBuilding(
                 b,
                 vehicleMap,
@@ -1641,14 +1649,11 @@
 
             const buyableData = getBuyableMissingVehicles(
                 b,
-                vehicleMap,
+                missingData,
                 vehicleTypeMap,
                 lssmBuildingDefs
             );
 
-            // =========================================================
-            // Fehlende Elemente gruppieren
-            // =========================================================
             const missingGrouped = {};
 
             (missingData.vehiclesIds || []).forEach(id => {
@@ -1658,16 +1663,9 @@
 
             const coloredMissingNames = Object.entries(missingGrouped)
             .map(([id, count]) => {
-
-                // =================================================
-                // RC / Rollcontainer
-                // =================================================
                 if (id.startsWith('equipment:')) {
-                    const equipmentId =
-                          id.substring('equipment:'.length);
-
-                    const equipment =
-                          getEquipmentById(equipmentId);
+                    const equipmentId = id.substring('equipment:'.length);
+                    const equipment = getEquipmentById(equipmentId);
 
                     if (!equipment) {
                         return `Unbekannter RC (${equipmentId})`;
@@ -1688,35 +1686,23 @@
                     )
                     : null;
 
-                    // ---------------------------------------------
-                    // Lager vorhanden
-                    // ---------------------------------------------
                     if (storageTotal > 0) {
                         return displayName;
                     }
 
-                    // ---------------------------------------------
-                    // Lagererweiterung im Bau
-                    // ---------------------------------------------
                     if (
                         storageUpgrade &&
                         storageUpgrade.available === false &&
                         storageUpgrade.available_at
                     ) {
                         return `<span style="color:orange;font-weight:bold;"
-                   title="Lager im Bau">${displayName}</span>`;
+                                    title="Lager im Bau">${displayName}</span>`;
                     }
 
-                    // ---------------------------------------------
-                    // Lager fehlt
-                    // ---------------------------------------------
                     return `<span style="color:red;font-weight:bold;"
-                                   title="Lager fehlt">${displayName}</span>`;
+                                title="Lager fehlt">${displayName}</span>`;
                 }
 
-                // =================================================
-                // Fahrzeug / AB / Anhänger
-                // =================================================
                 const typeId = parseInt(id, 10);
 
                 const status = getExtensionStatusForVehicle(
@@ -1738,11 +1724,11 @@
                     case 'locked':
                     case 'missing':
                         return `<span style="color:red;font-weight:bold;"
-                                       title="Erweiterung fehlt">${displayName}</span>`;
+                                    title="Erweiterung fehlt">${displayName}</span>`;
 
                     case 'in_progress':
                         return `<span style="color:orange;font-weight:bold;"
-                                       title="Erweiterung im Bau">${displayName}</span>`;
+                                    title="Erweiterung im Bau">${displayName}</span>`;
 
                     default:
                         return displayName;
@@ -1750,13 +1736,10 @@
             })
             .join(',<wbr>&nbsp;') || missingData.names;
 
-            const missingVehiclesJson =
-                  JSON.stringify(missingData.vehiclesIds || []);
+            const missingVehicles = missingData.vehiclesIds || [];
+            const missingVehiclesJson = JSON.stringify(missingVehicles);
+            const hasMissing = missingVehicles.length > 0;
 
-            // =========================================================
-            // Stellplätze
-            // RCs zählen NICHT als Fahrzeug-Stellplätze
-            // =========================================================
             const maxVehicles =
                   calcMaxParkingLots(b, lssmBuildingDefs);
 
@@ -1766,9 +1749,6 @@
                       0
                   );
 
-            // =========================================================
-            // Profil-Zelle
-            // =========================================================
             const profileCell = hasProfiles
             ? `<select class="fm-building-profile"
                        data-building-id="${b.id}"
@@ -1779,26 +1759,23 @@
                               background:var(--spoiler-body-bg);
                               color:var(--spoiler-body-text);
                               width:100%;">
-          ${profileNames
-            .map(p => `
-              <option value="${p}" ${p === activeProfile ? 'selected' : ''}>
-                ${p}
-              </option>
-            `)
-            .join('')}
-        </select>`
+                ${profileNames.map(p => `
+                    <option value="${p}" ${p === activeProfile ? 'selected' : ''}>
+                        ${p}
+                    </option>
+                `).join('')}
+              </select>`
             : `<span style="color:var(--text-color-secondary,#999);
                              font-style:italic;">
                  – kein Profil –
                </span>`;
 
-            // =========================================================
-            // Tabellenzeile
-            // =========================================================
             html += `
       <tr data-building-id="${b.id}"
           data-config-key="${configKey}"
-          data-missing-vehicle-ids='${missingVehiclesJson}'>
+          data-missing-vehicle-ids='${missingVehiclesJson}'
+          data-has-missing="${hasMissing}"
+          data-storage-free="${storageFree}">
 
         <td>
           <input type="checkbox"
@@ -1880,7 +1857,7 @@
         return html;
     }
 
-    // Funktion für alle Event-Listener
+
     function setupTableEventListeners(tableId, buildings, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
         const table = document.getElementById(`fm-table-${tableId}`);
         if (!table) return;
@@ -1888,7 +1865,6 @@
         const storageKey = `fm-hide-no-missing-${tableId}`;
         let hideNoMissing = localStorage.getItem(storageKey) === 'true';
 
-        // --- Profilwechsel ---
         table.querySelectorAll('.fm-building-profile').forEach(sel => {
             sel.addEventListener('change', e => {
                 const buildingId = e.target.dataset.buildingId;
@@ -1904,9 +1880,7 @@
                 const selectedBuildings = new Set(
                     Array.from(
                         table.querySelectorAll('.fm-select:checked')
-                    ).map(
-                        cb => cb.closest('tr')?.dataset.buildingId
-                    )
+                    ).map(cb => cb.closest('tr')?.dataset.buildingId)
                 );
 
                 const masterChecked =
@@ -1974,17 +1948,12 @@
             });
         });
 
-        // --- Toggle "Keine fehlenden" ---
-        const toggleBtn =
-              table.querySelector(
-                  `.fm-toggle-hide-no-missing[data-table="${tableId}"]`
-              );
+        const toggleBtn = table.querySelector(
+            `.fm-toggle-hide-no-missing[data-table="${tableId}"]`
+        );
 
         if (toggleBtn) {
-            toggleBtn.classList.toggle(
-                'active',
-                hideNoMissing
-            );
+            toggleBtn.classList.toggle('active', hideNoMissing);
 
             toggleBtn.textContent =
                 hideNoMissing
@@ -1999,10 +1968,7 @@
                     hideNoMissing ? 'true' : 'false'
                 );
 
-                toggleBtn.classList.toggle(
-                    'active',
-                    hideNoMissing
-                );
+                toggleBtn.classList.toggle('active', hideNoMissing);
 
                 toggleBtn.textContent =
                     hideNoMissing
@@ -2013,17 +1979,12 @@
             });
         }
 
-        // --- Filterfunktion ---
         function applyRowFilter() {
             const filterLeitstelle =
-                  table.querySelector(
-                      '.fm-filter-leitstelle'
-                  )?.value || '';
+                  table.querySelector('.fm-filter-leitstelle')?.value || '';
 
             const filterWache =
-                  table.querySelector(
-                      '.fm-filter-wache'
-                  )?.value || '';
+                  table.querySelector('.fm-filter-wache')?.value || '';
 
             table.querySelectorAll('tbody tr').forEach(row => {
                 const rowLeitstelle =
@@ -2032,8 +1993,11 @@
                 const rowWache =
                       row.children[2]?.textContent.trim();
 
-                const missingText =
-                      row.children[7]?.innerText.trim() || '';
+                const hasMissing =
+                      row.dataset.hasMissing === 'true';
+
+                const storageFree =
+                      Number(row.dataset.storageFree || 0);
 
                 let visible = true;
 
@@ -2053,7 +2017,8 @@
 
                 if (
                     hideNoMissing &&
-                    missingText === 'Keine'
+                    !hasMissing &&
+                    storageFree <= 0
                 ) {
                     visible = false;
                 }
@@ -2062,8 +2027,7 @@
                     visible ? '' : 'none';
 
                 if (!visible) {
-                    const cb =
-                          row.querySelector('.fm-select');
+                    const cb = row.querySelector('.fm-select');
 
                     if (cb) cb.checked = false;
                 }
@@ -2072,7 +2036,6 @@
             updateBuyButtons(table);
         }
 
-        // --- Checkboxen ---
         table.addEventListener('change', e => {
             if (
                 e.target.classList.contains('fm-select') ||
@@ -2082,7 +2045,6 @@
             }
         });
 
-        // --- Mastercheckbox ---
         table.querySelector('.fm-select-all')
             ?.addEventListener('change', e => {
             const checked = e.target.checked;
@@ -2101,26 +2063,14 @@
             updateBuyButtons(table);
         });
 
-        // --- Filter Leitstelle ---
-        table.querySelector(
-            '.fm-filter-leitstelle'
-        )?.addEventListener(
-            'change',
-            applyRowFilter
-        );
+        table.querySelector('.fm-filter-leitstelle')
+            ?.addEventListener('change', applyRowFilter);
 
-        // --- Filter Wache ---
-        table.querySelector(
-            '.fm-filter-wache'
-        )?.addEventListener(
-            'change',
-            applyRowFilter
-        );
+        table.querySelector('.fm-filter-wache')
+            ?.addEventListener('change', applyRowFilter);
 
-        // --- Filter zurücksetzen ---
-        table.querySelector(
-            '.fm-filter-reset'
-        )?.addEventListener('click', () => {
+        table.querySelector('.fm-filter-reset')
+            ?.addEventListener('click', () => {
             const container = table.parentElement;
 
             container.innerHTML = buildFahrzeugTable(
@@ -2136,163 +2086,56 @@
             );
         });
 
-        // --- initial anwenden ---
         applyRowFilter();
     }
 
     // Gibt die tatsächlich kaufbaren Fahrzeuge und RCs zurück
-    function getBuyableMissingVehicles(building, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
-        const vehiclesOnBuilding = vehicleMap[building.id] || [];
-        const istByType = {};
-
-        vehiclesOnBuilding.forEach(v => {
-            const tid = String(v.vehicle_type);
-            istByType[tid] = (istByType[tid] || 0) + 1;
-        });
-
-        const buildingKey =
-              `${building.building_type}_${building.small_building ? 'small' : 'normal'}`;
-
-        const activeProfile =
-              getBuildingActiveProfile(building.id, buildingKey);
-
-        const profilesData = loadProfiles(buildingKey);
-        const config = profilesData.profiles[activeProfile] || [];
-        console.log(
-            '[FM][Config-Test]',
-            {
-                buildingId: building.id,
-                building: building.caption,
-                buildingKey,
-                activeProfile,
-                configExists: !!profilesData.profiles[activeProfile],
-                configLength: config.length,
-                checked: config.filter(c => c.checked).length,
-                config: config
-            }
-        );
-
+    function getBuyableMissingVehicles(building, missingData, vehicleTypeMap, lssmBuildingDefs) {
         let totalCredits = 0;
         let totalCoins = 0;
-
-        const missingVehicleIds = [];
-
-        // Für RCs:
+        const missingVehicleIds = missingData?.vehiclesIds || [];
         const storage = getBuildingStorageInfo(building);
         let remainingStorage = storage.free;
 
-        config.forEach(c => {
-            if (!c.checked) return;
-
-            const itemType = c.itemType || c.type || 'vehicle';
-            const requestedAmount = parseInt(c.amount, 10) || 1;
-            if (itemType === 'equipment') {
-                const equipmentTypeId = String(c.typeId);
-                const ist =
-                      equipmentMapGlobal[building.id]?.[equipmentTypeId] || 0;
-
-                const missingAmount =
-                      Math.max(requestedAmount - ist, 0);
-
-                if (missingAmount <= 0) return;
-
-                const equipment =
-                      getEquipmentById(equipmentTypeId);
+        missingVehicleIds.forEach(item => {
+            const itemString = String(item);
+            if (itemString.startsWith('equipment:')) {
+                const equipmentTypeId = itemString.substring('equipment:'.length);
+                const equipment = getEquipmentById(equipmentTypeId);
 
                 if (!equipment) return;
 
-                const size =
-                      Number(equipment.size || 0);
+                const size = Number(equipment.size || 0);
 
-                /*
-             * Ohne Lager können keine RCs gekauft werden.
-             */
+                // Ohne verfügbares Lager können keine RCs gekauft werden
                 if (!storage.hasStorage || !storage.available || size <= 0) {
                     return;
                 }
 
-                /*
-             * Ermitteln, wie viele der fehlenden RCs
-             * tatsächlich noch ins Lager passen.
-             */
-                const maxBuyable =
-                      Math.min(
-                          missingAmount,
-                          Math.floor(remainingStorage / size)
-                      );
-
-                if (maxBuyable <= 0) return;
-
-                totalCredits +=
-                    Number(equipment.credits || 0) * maxBuyable;
-
-                totalCoins +=
-                    Number(equipment.coins || 0) * maxBuyable;
-
-                remainingStorage -= maxBuyable * size;
-
-                for (let i = 0; i < maxBuyable; i++) {
-                    missingVehicleIds.push(
-                        `equipment:${equipmentTypeId}`
-                    );
+                // RC passt nicht mehr ins Lager
+                if (remainingStorage < size) {
+                    return;
                 }
+
+                totalCredits += Number(equipment.credits || 0);
+                totalCoins += Number(equipment.coins || 0);
+                remainingStorage -= size;
 
                 return;
             }
-
-            let typeId =
-                c.typeId != null
-            ? String(c.typeId)
-            : null;
-
-            if (!typeId) {
-                const vtEntry =
-                      Object.entries(vehicleTypeMap).find(
-                          ([id, v]) =>
-                          (v.caption || '').trim() ===
-                          (c.caption || '').trim()
-                      );
-
-                if (vtEntry) {
-                    typeId = String(vtEntry[0]);
-                }
-            }
-
-            if (!typeId) return;
-
-            const ist = istByType[typeId] || 0;
-
-            const diff =
-                  Math.max(requestedAmount - ist, 0);
-
-            if (diff <= 0) return;
-
-            const status =
-                  getExtensionStatusForVehicle(
-                      building,
-                      parseInt(typeId, 10),
-                      lssmBuildingDefs
-                  );
-
+            const typeId = parseInt(itemString, 10);
+            if (Number.isNaN(typeId)) return;
+            const status = getExtensionStatusForVehicle(
+                building,
+                typeId,
+                lssmBuildingDefs
+            );
             if (status !== 'ok' && status !== null) return;
-
             const vt = vehicleTypeMap[typeId];
-
-            if (vt) {
-                totalCredits +=
-                    Number(vt.credits || 0) * diff;
-
-                totalCoins +=
-                    Number(vt.coins || 0) * diff;
-            }
-
-            for (let i = 0; i < diff; i++) {
-                missingVehicleIds.push(
-                    parseInt(typeId, 10)
-                );
-            }
+            if (!vt) return;
+            totalCredits += Number(vt.credits || 0);
+            totalCoins += Number(vt.coins || 0);
         });
-
         return {
             totalCredits,
             totalCoins,
@@ -2314,20 +2157,6 @@
         const activeProfile = getBuildingActiveProfile(building.id, buildingKey);
         const profilesData = loadProfiles(buildingKey);
         const config = profilesData.profiles[activeProfile] || [];
-        console.log(
-            '[FM][Config-Test]',
-            {
-                buildingId: building.id,
-                building: building.caption,
-                buildingKey,
-                activeProfile,
-                configExists: !!profilesData.profiles[activeProfile],
-                configLength: config.length,
-                checked: config.filter(c => c.checked).length,
-                config: config
-            }
-        );
-
         const missing = [];
         const missingVehicleIds = [];
         let totalCredits = 0;
@@ -2338,8 +2167,6 @@
 
             const itemType = c.itemType || c.type || 'vehicle';
             const requestedAmount = parseInt(c.amount, 10) || 1;
-
-            // RC / Equipment
             if (itemType === 'equipment') {
                 const equipmentTypeId = String(c.typeId);
                 const ist = equipmentMapGlobal[building.id]?.[equipmentTypeId] || 0;
@@ -2365,10 +2192,7 @@
 
                 return;
             }
-
-            // Fahrzeug / AB / Anhänger
             let typeId = c.typeId != null ? String(c.typeId) : null;
-
             if (!typeId) {
                 const vtEntry = Object.entries(vehicleTypeMap).find(
                     ([id, v]) =>
@@ -2378,36 +2202,24 @@
 
                 if (vtEntry) typeId = String(vtEntry[0]);
             }
-
             if (!typeId) return;
-
             const ist = istByType[typeId] || 0;
             const diff = Math.max(requestedAmount - ist, 0);
-
             if (diff <= 0) return;
-
             const vt = vehicleTypeMap[typeId];
-
-            // IMMER anzeigen – unabhängig vom Erweiterungsstatus
             for (let i = 0; i < diff; i++) {
                 missingVehicleIds.push(parseInt(typeId, 10));
             }
-
             missing.push(
                 diff > 1
                 ? `${diff}x ${c.caption}`
                 : c.caption
             );
-
-            // Kosten ebenfalls nur anhand des Fahrzeugs berechnen.
-            // Ob es tatsächlich kaufbar ist, entscheidet später
-            // getBuyableMissingVehicles().
             if (vt) {
                 totalCredits += (vt.credits || 0) * diff;
                 totalCoins += (vt.coins || 0) * diff;
             }
         });
-
         return {
             names: missing.join(',<wbr> ') || 'Keine',
             totalCredits,
@@ -2542,11 +2354,6 @@
         setAllButtonsDisabled(true, cancelBtn);
 
         try {
-            /*
-         * =========================================================
-         * KAUFPLAN ERSTELLEN
-         * =========================================================
-         */
 
             const buyPlanMap = {};
             let totalWanted = 0;
@@ -2605,12 +2412,6 @@
                 return;
             }
 
-            /*
-         * =========================================================
-         * AKTUELLE FAHRZEUGE LADEN
-         * =========================================================
-         */
-
             let freshVehiclesData = [];
 
             try {
@@ -2656,12 +2457,6 @@
                 freshVehicleMap[buildingId].push(v);
             });
 
-            /*
-         * =========================================================
-         * KAUFLISTE ERSTELLEN
-         * =========================================================
-         */
-
             const requestsByBuilding = {};
 
             Object.values(buyPlanMap).forEach(request => {
@@ -2679,19 +2474,11 @@
 
             let wantedVehicles = 0;
             let actualVehiclesToBuy = 0;
-
             let wantedEquipment = 0;
             let actualEquipmentToBuy = 0;
-
             let blockedByParking = 0;
             let blockedByStorage = 0;
             let blockedByNoStorage = 0;
-
-            /*
-         * =========================================================
-         * JEDE WACHE PRÜFEN
-         * =========================================================
-         */
 
             Object.entries(requestsByBuilding).forEach(
                 ([buildingIdString, requests]) => {
@@ -2703,12 +2490,6 @@
                           (buildingDataGlobal || []).find(
                               b => Number(b.id) === buildingId
                           );
-
-                    /*
-                 * -------------------------------------------------
-                 * FAHRZEUG-STELLPLÄTZE
-                 * -------------------------------------------------
-                 */
 
                     let freeSlots = Infinity;
 
@@ -2735,13 +2516,6 @@
                             freeSlots = 0;
                         }
                     }
-
-                    /*
-                 * -------------------------------------------------
-                 * LAGERPLATZ
-                 * -------------------------------------------------
-                 */
-
                     const storage =
                           getBuildingStorageInfo(
                               buildingObj
@@ -2749,13 +2523,6 @@
 
                     let remainingStorage =
                         storage.free;
-
-                    /*
-                 * -------------------------------------------------
-                 * REQUESTS DIESER WACHE
-                 * -------------------------------------------------
-                 */
-
                     requests.forEach(request => {
                         const {
                             itemType,
@@ -2863,12 +2630,6 @@
 
                             return;
                         }
-
-                        /*
-                     * =================================================
-                     * FAHRZEUG / AB / ANHÄNGER
-                     * =================================================
-                     */
 
                         wantedVehicles += wanted;
 
@@ -3111,20 +2872,43 @@
 
                     continue;
                 }
+                const isEquipment = itemType === 'equipment';
 
-                const url = itemType === 'equipment'
-                ? `/buildings/${buildingId}/equipment/${itemId}/${currency}?return_tab=rolling_containers`
+                const equipmentReturnTab = [
+                    'rescue_lift',
+                    'police_lift',
+                    'mountain_drone'
+                ].includes(String(itemId))
+                ? 'helicopter_equipment'
+                : 'rolling_containers';
+
+                const url = isEquipment
+                ? `/buildings/${buildingId}/equipment/${itemId}/${currency}?return_tab=${equipmentReturnTab}`
                 : `/buildings/${buildingId}/vehicle/${buildingId}/${itemId}/${currency}?building=${buildingId}`;
 
                 try {
-                    const res =
-                          await fetch(
-                              url,
-                              {
-                                  signal:
-                                  controller.signal
-                              }
-                          );
+                    let fetchOptions = {
+                        signal: controller.signal
+                    };
+
+                    if (isEquipment) {
+                        const token = document.querySelector('meta[name="csrf-token"]')?.content;
+
+                        const body = new URLSearchParams();
+                        body.set('_method', 'post');
+                        body.set('authenticity_token', token);
+
+                        fetchOptions = {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+                            },
+                            body: body.toString(),
+                            signal: controller.signal
+                        };
+                    }
+
+                    const res = await fetch(url, fetchOptions);
 
                     if (res.ok) {
                         boughtCount++;
@@ -3285,14 +3069,12 @@
         }
     }); // Resetbutton
     document.addEventListener('click', e => {
-        if(e.target && e.target.id==='fahrzeug-manager-btn'){
-            e.preventDefault();
-            ensureModalInserted('fahrzeugManagerModal', modalHTML);
-            $('#fahrzeugManagerModal').modal('show');
-            updateUserResources();
-            loadBuildingsFromAPI();
-        }
-    }); // Managerbutton
+    if (e.target && e.target.id === 'fahrzeug-manager-btn') {
+        e.preventDefault();
+        ensureModalInserted('fahrzeugManagerModal', modalHTML);
+        $('#fahrzeugManagerModal').modal('show');
+    }
+}); // Managerbutton
     document.addEventListener('click', e => {
         if (e.target && e.target.id === 'fm-export-profiles') {
             e.preventDefault();
@@ -3458,7 +3240,4 @@
     });
 
     window.fm_updateSelectedCosts = updateSelectedCosts;
-
-
-
 })();
