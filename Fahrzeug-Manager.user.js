@@ -103,7 +103,7 @@
                 </div>
               </div>
               <div class="modal-body" id="fahrzeug-manager-content">
-                <p>Lade Daten...</p>
+                <p>Lade die eingestellten Konfigurationen, je nach Auswahl kann dies einen Augenblick dauern.</p>
               </div>
             </div>
           </div>
@@ -413,7 +413,7 @@
     // Gesamte Übersicht laden
     async function loadBuildingsFromAPI() {
         const content = document.getElementById('fahrzeug-manager-content');
-        content.innerHTML = '<p><span class="glyphicon glyphicon-refresh glyphicon-spin"></span> Lade Übersicht...</p>';
+        content.innerHTML = '<p><span class="glyphicon glyphicon-refresh glyphicon-spin"></span> Lade die eingestellten Konfigurationen, je nach Auswahl kann dies einen Augenblick dauern.</p>';
         try {
             const [
                 buildings,
@@ -599,36 +599,183 @@
 
     // Ermittelt den Erweiterungsstatus eines Gebäudes für einen bestimmten Fahrzeugtyp
     function getExtensionStatusForVehicle(building, vehicleTypeId, lssmBuildingDefs) {
-        if (!building || !building.extensions || !lssmBuildingDefs) return null;
+        if (!building || !lssmBuildingDefs) return null;
 
         const buildingDef = lssmBuildingDefs[building.building_type];
-        if (!buildingDef || !buildingDef.extensions) return null;
 
-        const matchingExtDef = buildingDef.extensions.find(extDef =>
-                                                           extDef.unlocksVehicleTypes && extDef.unlocksVehicleTypes.includes(vehicleTypeId)
-                                                          );
+        if (!buildingDef || !Array.isArray(buildingDef.extensions)) {
+            return null;
+        }
 
-        if (!matchingExtDef) return null;
+        const typeId = Number(vehicleTypeId);
+        const vehicleType = vehicleTypeMapGlobal?.[typeId];
 
-        // reale Erweiterung anhand des Caption-Vergleichs finden
-        const realExt = building.extensions.find(e =>
-                                                 e.caption.trim().toLowerCase() === matchingExtDef.caption.trim().toLowerCase()
-                                                );
+        if (!vehicleType) return null;
 
-        if (!realExt) {
+        const extensions = buildingDef.extensions;
+
+        /*
+     * Anhänger / AB:
+     *
+     * Bei allen Anhängern zuerst nach einer tatsächlichen
+     * Stellplatz-Reservierung suchen.
+     *
+     * Dadurch ist nicht entscheidend, ob das Zugfahrzeug vorhanden
+     * ist, sondern ob die benötigte Erweiterung/Stellplatz vorhanden ist.
+     */
+        if (vehicleType.isTrailer === true) {
+            const reservationExtensions = extensions.filter(extDef =>
+                                                            Array.isArray(extDef.parkingLotReservations) &&
+                                                            extDef.parkingLotReservations.some(reservation =>
+                                                                                               Array.isArray(reservation) &&
+                                                                                               reservation.some(id => Number(id) === typeId)
+                                                                                              )
+                                                           );
+
+            if (reservationExtensions.length > 0) {
+                const matchingExtDef = reservationExtensions[0];
+
+                const realExtension = building.extensions?.find(ext =>
+                                                                ext.caption &&
+                                                                matchingExtDef.caption &&
+                                                                ext.caption.trim().toLowerCase() ===
+                                                                matchingExtDef.caption.trim().toLowerCase()
+                                                               );
+
+                if (!realExtension) {
+                    return 'missing';
+                }
+
+                if (
+                    realExtension.available === false &&
+                    realExtension.enabled === true
+                ) {
+                    return 'in_progress';
+                }
+
+                if (
+                    realExtension.available === true &&
+                    realExtension.enabled === false
+                ) {
+                    return 'ok';
+                }
+
+                return 'ok';
+            }
+
+            /*
+         * Kein reservierter Stellplatz gefunden.
+         *
+         * Einige spezielle Anhänger haben zwar eine eigene
+         * Erweiterung, aber keine parkingLotReservations.
+         * Diese Erweiterung darf weiterhin über unlocksVehicleTypes
+         * ermittelt werden.
+         */
+            const trailerExtension = extensions.find(extDef =>
+                                                     Array.isArray(extDef.unlocksVehicleTypes) &&
+                                                     extDef.unlocksVehicleTypes.some(id => Number(id) === typeId)
+                                                    );
+
+            if (!trailerExtension) {
+                return 'missing';
+            }
+
+            const realExtension = building.extensions?.find(ext =>
+                                                            ext.caption &&
+                                                            trailerExtension.caption &&
+                                                            ext.caption.trim().toLowerCase() ===
+                                                            trailerExtension.caption.trim().toLowerCase()
+                                                           );
+
+            if (!realExtension) {
+                return 'missing';
+            }
+
+            if (
+                realExtension.available === false &&
+                realExtension.enabled === true
+            ) {
+                return 'in_progress';
+            }
+
+            if (
+                realExtension.available === true &&
+                realExtension.enabled === false
+            ) {
+                return 'ok';
+            }
+
+            return 'ok';
+        }
+
+        /*
+     * Normale Fahrzeuge:
+     * Hier weiterhin über unlocksVehicleTypes prüfen.
+     */
+        const matchingExtDef = extensions.find(extDef =>
+                                               Array.isArray(extDef.unlocksVehicleTypes) &&
+                                               extDef.unlocksVehicleTypes.some(id => Number(id) === typeId)
+                                              );
+
+        if (!matchingExtDef) {
+            return null;
+        }
+
+        const realExtension = building.extensions?.find(ext =>
+                                                        ext.caption &&
+                                                        matchingExtDef.caption &&
+                                                        ext.caption.trim().toLowerCase() ===
+                                                        matchingExtDef.caption.trim().toLowerCase()
+                                                       );
+
+        if (!realExtension) {
             return 'missing';
         }
 
-        if (realExt.available === false && realExt.enabled === true) {
+        if (
+            realExtension.available === false &&
+            realExtension.enabled === true
+        ) {
             return 'in_progress';
         }
 
-        // ✅ Erweiterung vorhanden, aber deaktiviert -> trotzdem OK
-        if (realExt.available === true && realExt.enabled === false) {
+        if (
+            realExtension.available === true &&
+            realExtension.enabled === false
+        ) {
             return 'ok';
         }
 
         return 'ok';
+    }
+
+    // Ermittelt alle eigenen RC / Winden
+    function getEquipmentById(typeId) {
+        const id = String(typeId);
+
+        return equipmentDataGlobal.find(
+            e => String(e.id) === id
+        ) || equipmentTypeMapGlobal[id] || null;
+    }
+
+    // Prüft den Status der Lager jeder Wache (Fehlt/Baut/Vorhanden)
+    function getBuildingStorageInfo(building) {
+        const storageTotal = Number(building?.storage_total || 0);
+        const storageAvailable = Number(building?.storage_available || 0);
+
+        const storageUpgrade = Array.isArray(building?.storage_upgrades)
+        ? building.storage_upgrades.find(
+            u => u.upgrade_type === 'Lagerraum'
+        )
+        : null;
+
+        return {
+            hasStorage: storageTotal > 0,
+            available: storageTotal > 0 && storageAvailable > 0,
+            total: storageTotal,
+            free: Math.max(storageAvailable, 0),
+            upgrade: storageUpgrade
+        };
     }
 
     // Nach Typ gruppieren und Spoiler bauen
@@ -1403,8 +1550,9 @@
 
         return html;
     }
-    // Tabelle bauen
-    function buildFahrzeugTable(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs, filters = {} ) {
+
+    // Tabelle(n) bauen
+    function buildFahrzeugTable(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs, filters = {}) {
         const filterLeitstelle = filters.leitstelle || '';
         const filterWache = filters.wache || '';
 
@@ -1426,8 +1574,8 @@
           <th>Profil</th>
           <th>Fahrzeuge</th>
           <th>Freie Stellplätze</th>
-          <th>Fahrzeuge auf Wache</th>
-          <th>Fehlende Fahrzeuge</th>
+          <th>Fahrzeuge / RCs auf Wache</th>
+          <th>Fehlende Fahrzeuge / RCs</th>
           <th>Kaufen mit Credits</th>
           <th>Kaufen mit Coins</th>
         </tr>
@@ -1462,19 +1610,23 @@
           <td></td>
 
           <td style="text-align:center;">
-            <button class="btn btn-info btn-xs fm-toggle-hide-no-missing" data-table="${tableId}" title="Blendet Wachen aus, bei denen keine Fahrzeuge fehlen">
+            <button class="btn btn-info btn-xs fm-toggle-hide-no-missing"
+                    data-table="${tableId}"
+                    title="Blendet Wachen aus, bei denen keine Fahrzeuge oder RCs fehlen">
               Keine fehlenden
             </button>
           </td>
 
-          <td style="text-align: center;">
-            <button class="btn btn-success btn-xs fm-buy-selected-credits" data-table="${tableId}">
+          <td style="text-align:center;">
+            <button class="btn btn-success btn-xs fm-buy-selected-credits"
+                    data-table="${tableId}">
               💳 Alle kaufen
             </button>
           </td>
 
-          <td style="text-align: center;">
-            <button class="btn btn-danger btn-xs fm-buy-selected-coins" data-table="${tableId}">
+          <td style="text-align:center;">
+            <button class="btn btn-danger btn-xs fm-buy-selected-coins"
+                    data-table="${tableId}">
               🪙 Alle kaufen
             </button>
           </td>
@@ -1482,7 +1634,7 @@
       </thead>
 
       <tbody>
-  `;
+    `;
 
         const sortedBuildings = buildings
         .slice()
@@ -1494,23 +1646,72 @@
 
             const vehiclesOnBuilding = vehicleMap[b.id] || [];
 
+            // =========================================================
+            // Fahrzeuge auf der Wache
+            // =========================================================
             const typeCountMapOnBuilding = {};
+
             vehiclesOnBuilding.forEach(v => {
                 const typeId = v.vehicle_type;
-                const typeName =
-                      vehicleTypeMap[typeId]?.caption || `Unbekannt (Typ ${typeId})`;
+                const key = `vehicle:${typeId}`;
 
-                typeCountMapOnBuilding[typeName] =
-                    (typeCountMapOnBuilding[typeName] || 0) + 1;
+                const typeName =
+                      vehicleTypeMap[typeId]?.caption ||
+                      `Unbekannt (Typ ${typeId})`;
+
+                if (!typeCountMapOnBuilding[key]) {
+                    typeCountMapOnBuilding[key] = {
+                        type: 'vehicle',
+                        id: String(typeId),
+                        name: typeName,
+                        count: 0
+                    };
+                }
+
+                typeCountMapOnBuilding[key].count++;
             });
 
-            const vehicleNames = Object.entries(typeCountMapOnBuilding)
-            .map(([name, count]) =>
-                 count > 1 ? `${count}x ${name}` : name
-                )
-            .join(',<wbr> ') || 'Keine Fahrzeuge auf Wache vorhanden';
+            // =========================================================
+            // RCs auf der Wache
+            // =========================================================
+            const buildingEquipment =
+                  equipmentMapGlobal[b.id] || {};
 
-            const configKey = `${b.building_type}_${b.small_building ? 'small' : 'normal'}`;
+            Object.entries(buildingEquipment).forEach(([equipmentId, count]) => {
+                const equipment = getEquipmentById(equipmentId);
+                if (!equipment || !count) return;
+
+                const key = `equipment:${equipmentId}`;
+
+                typeCountMapOnBuilding[key] = {
+                    type: 'equipment',
+                    id: String(equipmentId),
+                    name: equipment.caption,
+                    count: Number(count) || 0
+                };
+            });
+
+            const vehicleNames = Object.values(typeCountMapOnBuilding)
+            .map(item => {
+                const displayName =
+                      item.count > 1
+                ? `${item.count}x ${item.name}`
+                : item.name;
+
+                if (item.type === 'equipment') {
+                    return `<span style="color:brown;"
+                                  title="Rollcontainer">${displayName}</span>`;
+                }
+
+                return displayName;
+            })
+            .join(',<wbr> ') || 'Keine Fahrzeuge / RCs auf Wache vorhanden';
+
+            // =========================================================
+            // Profil
+            // =========================================================
+            const configKey =
+                  `${b.building_type}_${b.small_building ? 'small' : 'normal'}`;
 
             const profilesData = loadProfiles(configKey);
             const profileNames = Object.keys(profilesData.profiles);
@@ -1520,11 +1721,14 @@
             ? getBuildingActiveProfile(b.id, configKey)
             : null;
 
+            // =========================================================
+            // Fehlende Fahrzeuge / RCs
+            // =========================================================
             const missingData = getMissingVehiclesForBuilding(
                 b,
                 vehicleMap,
                 vehicleTypeMap,
-                configKey
+                lssmBuildingDefs
             );
 
             const buyableData = getBuyableMissingVehicles(
@@ -1534,15 +1738,87 @@
                 lssmBuildingDefs
             );
 
-            const coloredMissingNames =
-                  missingData.vehiclesIds && missingData.vehiclesIds.length > 0
-            ? Object.entries(
-                missingData.vehiclesIds.reduce((acc, id) => {
-                    acc[id] = (acc[id] || 0) + 1;
-                    return acc;
-                }, {})
-            )
+            // =========================================================
+            // Fehlende Elemente gruppieren
+            // =========================================================
+            const missingGrouped = {};
+
+            (missingData.vehiclesIds || []).forEach(id => {
+                const key = String(id);
+                missingGrouped[key] = (missingGrouped[key] || 0) + 1;
+            });
+
+            const coloredMissingNames = Object.entries(missingGrouped)
             .map(([id, count]) => {
+
+                // =================================================
+                // RC / Rollcontainer
+                // =================================================
+                if (id.startsWith('equipment:')) {
+                    const equipmentId =
+                          id.substring('equipment:'.length);
+
+                    const equipment =
+                          getEquipmentById(equipmentId);
+
+                    if (!equipment) {
+                        return `Unbekannter RC (${equipmentId})`;
+                    }
+
+                    const displayName =
+                          count > 1
+                    ? `${count}x ${equipment.caption}`
+                    : equipment.caption;
+
+                    const storageTotal =
+                          Number(b.storage_total || 0);
+
+                    const storageUpgrade =
+                          Array.isArray(b.storage_upgrades)
+                    ? b.storage_upgrades.find(
+                        u => u.upgrade_type === 'Lagerraum'
+                    )
+                    : null;
+
+                    // ---------------------------------------------
+                    // Lager vorhanden
+                    // ---------------------------------------------
+                    if (storageTotal > 0) {
+                        return displayName;
+                    }
+
+                    // ---------------------------------------------
+                    // Lagererweiterung im Bau
+                    // ---------------------------------------------
+                    if (
+                        storageUpgrade &&
+                        storageUpgrade.available === false &&
+                        storageUpgrade.available_at
+                    ) {
+                        const availableAt = new Date(
+                            String(storageUpgrade.available_at)
+                            .replace(' ', 'T')
+                        ).getTime();
+
+                        if (
+                            !Number.isNaN(availableAt) &&
+                            availableAt > Date.now()
+                        ) {
+                            return `<span style="color:orange;font-weight:bold;"
+                                           title="Lager im Bau">${displayName}</span>`;
+                        }
+                    }
+
+                    // ---------------------------------------------
+                    // Lager fehlt
+                    // ---------------------------------------------
+                    return `<span style="color:red;font-weight:bold;"
+                                   title="Lager fehlt">${displayName}</span>`;
+                }
+
+                // =================================================
+                // Fahrzeug / AB / Anhänger
+                // =================================================
                 const typeId = parseInt(id, 10);
 
                 const status = getExtensionStatusForVehicle(
@@ -1552,41 +1828,80 @@
                 );
 
                 const name =
-                      vehicleTypeMap[typeId]?.caption || `Unbekannt (Typ ${id})`;
+                      vehicleTypeMap[typeId]?.caption ||
+                      `Unbekannt (Typ ${id})`;
 
                 const displayName =
-                      count > 1 ? `${count}x ${name}` : name;
+                      count > 1
+                ? `${count}x ${name}`
+                : name;
 
                 switch (status) {
                     case 'locked':
                     case 'missing':
-                        return `<span style="color:red;font-weight:bold;" title="Erweiterung fehlt">${displayName}</span>`;
+                        return `<span style="color:red;font-weight:bold;"
+                                       title="Erweiterung fehlt">${displayName}</span>`;
+
                     case 'in_progress':
-                        return `<span style="color:orange;font-weight:bold;" title="Erweiterung im Bau">${displayName}</span>`;
+                        return `<span style="color:orange;font-weight:bold;"
+                                       title="Erweiterung im Bau">${displayName}</span>`;
+
                     default:
                         return displayName;
                 }
             })
-            .join(',<wbr>&nbsp;')
-            : missingData.names;
+            .join(',<wbr>&nbsp;') || missingData.names;
 
-            const missingVehiclesJson = JSON.stringify(missingData.vehiclesIds || []);
+            const missingVehiclesJson =
+                  JSON.stringify(missingData.vehiclesIds || []);
 
-            const maxVehicles = calcMaxParkingLots(b, lssmBuildingDefs);
-            const freieStellplaetze = Math.max(maxVehicles - vehiclesOnBuilding.length, 0);
+            // =========================================================
+            // Stellplätze
+            // RCs zählen NICHT als Fahrzeug-Stellplätze
+            // =========================================================
+            const maxVehicles =
+                  calcMaxParkingLots(b, lssmBuildingDefs);
 
+            const freieStellplaetze =
+                  Math.max(
+                      maxVehicles - vehiclesOnBuilding.length,
+                      0
+                  );
+
+            // =========================================================
+            // Profil-Zelle
+            // =========================================================
             const profileCell = hasProfiles
-            ? `<select class="fm-building-profile" data-building-id="${b.id}" data-config-key="${configKey}" style="padding:2px 4px; border:1px solid var(--spoiler-border); border-radius:4px; background:var(--spoiler-body-bg); color:var(--spoiler-body-text); width:100%;">
+            ? `<select class="fm-building-profile"
+                       data-building-id="${b.id}"
+                       data-config-key="${configKey}"
+                       style="padding:2px 4px;
+                              border:1px solid var(--spoiler-border);
+                              border-radius:4px;
+                              background:var(--spoiler-body-bg);
+                              color:var(--spoiler-body-text);
+                              width:100%;">
           ${profileNames
             .map(p => `
-              <option value="${p}" ${p === activeProfile ? 'selected' : ''}>${p}</option>
+              <option value="${p}" ${p === activeProfile ? 'selected' : ''}>
+                ${p}
+              </option>
             `)
             .join('')}
         </select>`
-            : `<span style="color: var(--text-color-secondary, #999); font-style: italic;">– kein Profil –</span>`;
+            : `<span style="color:var(--text-color-secondary,#999);
+                             font-style:italic;">
+                 – kein Profil –
+               </span>`;
 
+            // =========================================================
+            // Tabellenzeile
+            // =========================================================
             html += `
-      <tr data-building-id="${b.id}" data-config-key="${configKey}" data-missing-vehicle-ids='${missingVehiclesJson}'>
+      <tr data-building-id="${b.id}"
+          data-config-key="${configKey}"
+          data-missing-vehicle-ids='${missingVehiclesJson}'>
+
         <td>
           <input type="checkbox"
                  class="fm-select"
@@ -1596,27 +1911,36 @@
         </td>
 
         <td>${b.leitstelle_caption ?? '-'}</td>
+
         <td>${buildBuildingLink(b)}</td>
+
         <td>${profileCell}</td>
+
         <td>${b.vehicle_count ?? 0}</td>
 
         <td>
-          <span class="badge fm-badge-green">${freieStellplaetze}</span>
+          <span class="badge fm-badge-green">
+            ${freieStellplaetze}
+          </span>
         </td>
 
         <td>
-          <span class="fm-vehicle-list">${vehicleNames}</span>
+          <span class="fm-vehicle-list">
+            ${vehicleNames}
+          </span>
         </td>
 
         <td>
-          <span class="fm-vehicle-list">${coloredMissingNames}</span>
+          <span class="fm-vehicle-list">
+            ${coloredMissingNames}
+          </span>
         </td>
 
         <td>
           <button class="btn btn-success btn-xs fm-buy-credit"
             ${
             buyableData.totalCredits === 0
-                ? 'disabled title="Keine kaufbaren Fahrzeuge"'
+                ? 'disabled title="Keine kaufbaren Fahrzeuge oder RCs"'
             : buyableData.totalCredits > currentCredits
                 ? 'disabled title="Nicht genug Credits"'
             : ''
@@ -1629,7 +1953,7 @@
           <button class="btn btn-danger btn-xs fm-buy-coin"
             ${
             buyableData.totalCoins === 0
-                ? 'disabled title="Keine kaufbaren Fahrzeuge"'
+                ? 'disabled title="Keine kaufbaren Fahrzeuge oder RCs"'
             : buyableData.totalCoins > currentCoins
                 ? 'disabled title="Nicht genug Coins"'
             : ''
@@ -1637,23 +1961,23 @@
             ${buyableData.totalCoins.toLocaleString()} Coins
           </button>
         </td>
+
       </tr>
     `;
         });
 
         html += '</tbody></table>';
 
-        // Event-Listener in separate Funktion auslagern
-        setTimeout(() =>
-                   setupTableEventListeners(
-            tableId,
-            buildings,
-            vehicleMap,
-            vehicleTypeMap,
-            lssmBuildingDefs
-        ),
-                   0
-                  );
+        setTimeout(
+            () => setupTableEventListeners(
+                tableId,
+                buildings,
+                vehicleMap,
+                vehicleTypeMap,
+                lssmBuildingDefs
+            ),
+            0
+        );
 
         return html;
     }
@@ -1663,7 +1987,7 @@
         const table = document.getElementById(`fm-table-${tableId}`);
         if (!table) return;
 
-        let storageKey = `fm-hide-no-missing-${tableId}`;
+        const storageKey = `fm-hide-no-missing-${tableId}`;
         let hideNoMissing = localStorage.getItem(storageKey) === 'true';
 
         // --- Profilwechsel ---
@@ -1673,20 +1997,32 @@
                 const configKey = e.target.dataset.configKey;
                 const selectedProfile = e.target.value;
 
-                setBuildingActiveProfile(buildingId, configKey, selectedProfile);
+                setBuildingActiveProfile(
+                    buildingId,
+                    configKey,
+                    selectedProfile
+                );
 
-                // Aktuell ausgewählte Gebäude merken
-                const selectedBuildings = new Set(Array.from(table.querySelectorAll('.fm-select:checked'))
-                                                  .map(cb => cb.closest('tr')?.dataset.buildingId));
+                const selectedBuildings = new Set(
+                    Array.from(
+                        table.querySelectorAll('.fm-select:checked')
+                    ).map(
+                        cb => cb.closest('tr')?.dataset.buildingId
+                    )
+                );
 
-                // Mastercheckbox merken
-                const masterChecked = table.querySelector('.fm-select-all')?.checked || false;
+                const masterChecked =
+                      table.querySelector('.fm-select-all')?.checked || false;
 
-                // Tabelle neu rendern
                 const container = table.parentElement;
                 container.style.visibility = 'hidden';
-                const filterLeitstelle = table.querySelector('.fm-filter-leitstelle')?.value || '';
-                const filterWache = table.querySelector('.fm-filter-wache')?.value || '';
+
+                const filterLeitstelle =
+                      table.querySelector('.fm-filter-leitstelle')?.value || '';
+
+                const filterWache =
+                      table.querySelector('.fm-filter-wache')?.value || '';
+
                 container.innerHTML = buildFahrzeugTable(
                     buildings,
                     tableId,
@@ -1699,100 +2035,194 @@
                     }
                 );
 
-                // Auswahl & Master wiederherstellen
-                const newTable = document.getElementById(`fm-table-${tableId}`);
+                const newTable =
+                      document.getElementById(`fm-table-${tableId}`);
 
                 if (newTable) {
-                    // Filter wiederherstellen
-                    const leitstelleSelect = newTable.querySelector('.fm-filter-leitstelle');
-                    const wacheSelect = newTable.querySelector('.fm-filter-wache');
+                    const leitstelleSelect =
+                          newTable.querySelector('.fm-filter-leitstelle');
 
-                    if (leitstelleSelect) leitstelleSelect.value = filterLeitstelle;
-                    if (wacheSelect) wacheSelect.value = filterWache;
+                    const wacheSelect =
+                          newTable.querySelector('.fm-filter-wache');
 
-                    leitstelleSelect?.dispatchEvent(new Event('change'));
-                    wacheSelect?.dispatchEvent(new Event('change'));
+                    if (leitstelleSelect) {
+                        leitstelleSelect.value = filterLeitstelle;
+                    }
 
-                    // ✅ Checkboxen wiederherstellen
+                    if (wacheSelect) {
+                        wacheSelect.value = filterWache;
+                    }
+
                     newTable.querySelectorAll('tbody tr').forEach(row => {
                         const id = row.dataset.buildingId;
+
                         if (selectedBuildings.has(id)) {
                             const cb = row.querySelector('.fm-select');
                             if (cb) cb.checked = true;
                         }
                     });
 
-                    // ✅ Master-Checkbox wiederherstellen
-                    const master = newTable.querySelector('.fm-select-all');
-                    if (master) master.checked = masterChecked;
+                    const master =
+                          newTable.querySelector('.fm-select-all');
 
-                    // Optional: Buttons aktualisieren
+                    if (master) {
+                        master.checked = masterChecked;
+                    }
+
                     updateBuyButtons(newTable);
                 }
 
-                // 👇 erst danach wieder anzeigen
                 container.style.visibility = 'visible';
             });
         });
 
         // --- Toggle "Keine fehlenden" ---
-        const toggleBtn = table.querySelector(`.fm-toggle-hide-no-missing[data-table="${tableId}"]`);
+        const toggleBtn =
+              table.querySelector(
+                  `.fm-toggle-hide-no-missing[data-table="${tableId}"]`
+              );
+
         if (toggleBtn) {
-            toggleBtn.classList.toggle('active', hideNoMissing);
-            toggleBtn.textContent = hideNoMissing ? 'Alle anzeigen' : '"Keine" ausblenden';
+            toggleBtn.classList.toggle(
+                'active',
+                hideNoMissing
+            );
+
+            toggleBtn.textContent =
+                hideNoMissing
+                ? 'Alle anzeigen'
+            : '"Keine" ausblenden';
+
             toggleBtn.addEventListener('click', () => {
                 hideNoMissing = !hideNoMissing;
-                localStorage.setItem(storageKey, hideNoMissing ? 'true' : 'false');
-                toggleBtn.classList.toggle('active', hideNoMissing);
-                toggleBtn.textContent = hideNoMissing ? 'Alle anzeigen' : '"Keine" ausblenden';
+
+                localStorage.setItem(
+                    storageKey,
+                    hideNoMissing ? 'true' : 'false'
+                );
+
+                toggleBtn.classList.toggle(
+                    'active',
+                    hideNoMissing
+                );
+
+                toggleBtn.textContent =
+                    hideNoMissing
+                    ? 'Alle anzeigen'
+                : '"Keine" ausblenden';
+
                 applyRowFilter();
             });
         }
 
         // --- Filterfunktion ---
         function applyRowFilter() {
-            const filterLeitstelle = table.querySelector('.fm-filter-leitstelle')?.value || '';
-            const filterWache = table.querySelector('.fm-filter-wache')?.value || '';
+            const filterLeitstelle =
+                  table.querySelector(
+                      '.fm-filter-leitstelle'
+                  )?.value || '';
+
+            const filterWache =
+                  table.querySelector(
+                      '.fm-filter-wache'
+                  )?.value || '';
 
             table.querySelectorAll('tbody tr').forEach(row => {
-                const rowLeitstelle = row.children[1]?.textContent.trim();
-                const rowWache = row.children[2]?.textContent.trim();
-                const missingText = row.children[7]?.innerText.trim() || '';
+                const rowLeitstelle =
+                      row.children[1]?.textContent.trim();
+
+                const rowWache =
+                      row.children[2]?.textContent.trim();
+
+                const missingText =
+                      row.children[7]?.innerText.trim() || '';
+
                 let visible = true;
 
-                if (filterLeitstelle && rowLeitstelle !== filterLeitstelle) visible = false;
-                if (filterWache && rowWache !== filterWache) visible = false;
-                if (hideNoMissing && missingText === 'Keine') visible = false;
+                if (
+                    filterLeitstelle &&
+                    rowLeitstelle !== filterLeitstelle
+                ) {
+                    visible = false;
+                }
 
-                row.style.display = visible ? '' : 'none';
+                if (
+                    filterWache &&
+                    rowWache !== filterWache
+                ) {
+                    visible = false;
+                }
+
+                if (
+                    hideNoMissing &&
+                    missingText === 'Keine'
+                ) {
+                    visible = false;
+                }
+
+                row.style.display =
+                    visible ? '' : 'none';
 
                 if (!visible) {
-                    const cb = row.querySelector('.fm-select');
+                    const cb =
+                          row.querySelector('.fm-select');
+
                     if (cb) cb.checked = false;
                 }
-                updateBuyButtons(table);
             });
+
+            updateBuyButtons(table);
         }
 
-        // --- Event-Listener für Filter & Checkboxen ---
+        // --- Checkboxen ---
         table.addEventListener('change', e => {
-            if (e.target.classList.contains('fm-select') || e.target.classList.contains('fm-select-all')) {
+            if (
+                e.target.classList.contains('fm-select') ||
+                e.target.classList.contains('fm-select-all')
+            ) {
                 updateBuyButtons(table);
             }
         });
 
-        table.querySelector('.fm-select-all')?.addEventListener('change', e => {
+        // --- Mastercheckbox ---
+        table.querySelector('.fm-select-all')
+            ?.addEventListener('change', e => {
             const checked = e.target.checked;
-            const visibleCheckboxes = [...table.querySelectorAll('tbody .fm-select')]
-            .filter(cb => cb.closest('tr').offsetParent !== null);
+
+            const visibleCheckboxes =
+                  [...table.querySelectorAll('tbody .fm-select')]
+            .filter(
+                cb =>
+                cb.closest('tr')?.offsetParent !== null
+            );
+
             visibleCheckboxes.forEach(cb => {
                 cb.checked = checked;
             });
+
             updateBuyButtons(table);
         });
-        table.querySelector('.fm-filter-leitstelle')?.addEventListener('change', applyRowFilter);
-        table.querySelector('.fm-filter-wache')?.addEventListener('change', applyRowFilter);
-        table.querySelector('.fm-filter-reset')?.addEventListener('click', () => {
+
+        // --- Filter Leitstelle ---
+        table.querySelector(
+            '.fm-filter-leitstelle'
+        )?.addEventListener(
+            'change',
+            applyRowFilter
+        );
+
+        // --- Filter Wache ---
+        table.querySelector(
+            '.fm-filter-wache'
+        )?.addEventListener(
+            'change',
+            applyRowFilter
+        );
+
+        // --- Filter zurücksetzen ---
+        table.querySelector(
+            '.fm-filter-reset'
+        )?.addEventListener('click', () => {
             const container = table.parentElement;
 
             container.innerHTML = buildFahrzeugTable(
@@ -1812,7 +2242,7 @@
         applyRowFilter();
     }
 
-    // Gibt die kaufbaren Fahrzeuge und RCs zurück
+    // Gibt die tatsächlich kaufbaren Fahrzeuge und RCs zurück
     function getBuyableMissingVehicles(building, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
         const vehiclesOnBuilding = vehicleMap[building.id] || [];
         const istByType = {};
@@ -1822,79 +2252,145 @@
             istByType[tid] = (istByType[tid] || 0) + 1;
         });
 
-        const buildingKey = `${building.building_type}_${building.small_building ? 'small' : 'normal'}`;
-        const activeProfile = getBuildingActiveProfile(building.id, buildingKey);
+        const buildingKey =
+              `${building.building_type}_${building.small_building ? 'small' : 'normal'}`;
+
+        const activeProfile =
+              getBuildingActiveProfile(building.id, buildingKey);
+
         const profilesData = loadProfiles(buildingKey);
         const config = profilesData.profiles[activeProfile] || [];
 
         let totalCredits = 0;
         let totalCoins = 0;
+
         const missingVehicleIds = [];
+
+        // Für RCs:
+        const storage = getBuildingStorageInfo(building);
+        let remainingStorage = storage.free;
 
         config.forEach(c => {
             if (!c.checked) return;
 
-            const itemType = c.itemType || 'vehicle';
+            const itemType = c.itemType || c.type || 'vehicle';
             const requestedAmount = parseInt(c.amount, 10) || 1;
 
+            /*
+         * =========================================================
+         * RC / EQUIPMENT
+         * =========================================================
+         */
             if (itemType === 'equipment') {
                 const equipmentTypeId = String(c.typeId);
+                const ist =
+                      equipmentMapGlobal[building.id]?.[equipmentTypeId] || 0;
 
-                const ist = equipmentMapGlobal[building.id]?.[equipmentTypeId] || 0;
-                const diff = Math.max(requestedAmount - ist, 0);
+                const missingAmount =
+                      Math.max(requestedAmount - ist, 0);
 
-                if (diff <= 0) return;
+                if (missingAmount <= 0) return;
 
-                const equipment = equipmentDataGlobal.find(
-                    e => String(e.id) === equipmentTypeId
-                );
+                const equipment =
+                      getEquipmentById(equipmentTypeId);
 
                 if (!equipment) return;
 
-                totalCredits += (equipment.credits || 0) * diff;
-                totalCoins += (equipment.coins || 0) * diff;
+                const size =
+                      Number(equipment.size || 0);
 
-                for (let i = 0; i < diff; i++) {
-                    missingVehicleIds.push(`equipment:${equipmentTypeId}`);
+                /*
+             * Ohne Lager können keine RCs gekauft werden.
+             */
+                if (!storage.hasStorage || !storage.available || size <= 0) {
+                    return;
+                }
+
+                /*
+             * Ermitteln, wie viele der fehlenden RCs
+             * tatsächlich noch ins Lager passen.
+             */
+                const maxBuyable =
+                      Math.min(
+                          missingAmount,
+                          Math.floor(remainingStorage / size)
+                      );
+
+                if (maxBuyable <= 0) return;
+
+                totalCredits +=
+                    Number(equipment.credits || 0) * maxBuyable;
+
+                totalCoins +=
+                    Number(equipment.coins || 0) * maxBuyable;
+
+                remainingStorage -= maxBuyable * size;
+
+                for (let i = 0; i < maxBuyable; i++) {
+                    missingVehicleIds.push(
+                        `equipment:${equipmentTypeId}`
+                    );
                 }
 
                 return;
             }
 
-            let typeId = c.typeId != null ? String(c.typeId) : null;
+            /*
+         * =========================================================
+         * FAHRZEUG / AB / ANHÄNGER
+         * =========================================================
+         */
+
+            let typeId =
+                c.typeId != null
+            ? String(c.typeId)
+            : null;
 
             if (!typeId) {
-                const vtEntry = Object.entries(vehicleTypeMap).find(
-                    ([id, v]) => (v.caption || '').trim() === (c.caption || '').trim()
-                );
+                const vtEntry =
+                      Object.entries(vehicleTypeMap).find(
+                          ([id, v]) =>
+                          (v.caption || '').trim() ===
+                          (c.caption || '').trim()
+                      );
 
-                if (vtEntry) typeId = String(vtEntry[0]);
+                if (vtEntry) {
+                    typeId = String(vtEntry[0]);
+                }
             }
 
             if (!typeId) return;
 
             const ist = istByType[typeId] || 0;
-            const diff = Math.max(requestedAmount - ist, 0);
+
+            const diff =
+                  Math.max(requestedAmount - ist, 0);
 
             if (diff <= 0) return;
 
-            const status = getExtensionStatusForVehicle(
-                building,
-                parseInt(typeId, 10),
-                lssmBuildingDefs
-            );
+            const status =
+                  getExtensionStatusForVehicle(
+                      building,
+                      parseInt(typeId, 10),
+                      lssmBuildingDefs
+                  );
 
             if (status !== 'ok' && status !== null) return;
 
             const vt = vehicleTypeMap[typeId];
 
             if (vt) {
-                totalCredits += (vt.credits || 0) * diff;
-                totalCoins += (vt.coins || 0) * diff;
+                totalCredits +=
+                    Number(vt.credits || 0) * diff;
+
+                totalCoins +=
+                    Number(vt.coins || 0) * diff;
             }
 
             for (let i = 0; i < diff; i++) {
-                missingVehicleIds.push(parseInt(typeId, 10));
+                missingVehicleIds.push(
+                    parseInt(typeId, 10)
+                );
             }
         });
 
@@ -1928,25 +2424,19 @@
         config.forEach(c => {
             if (!c.checked) return;
 
-            const itemType = c.itemType || 'vehicle';
+            const itemType = c.itemType || c.type || 'vehicle';
             const requestedAmount = parseInt(c.amount, 10) || 1;
 
+            // RC / Equipment
             if (itemType === 'equipment') {
                 const equipmentTypeId = String(c.typeId);
-
                 const ist = equipmentMapGlobal[building.id]?.[equipmentTypeId] || 0;
                 const diff = Math.max(requestedAmount - ist, 0);
 
                 if (diff <= 0) return;
 
-                const equipment = equipmentDataGlobal.find(
-                    e => String(e.id) === equipmentTypeId
-                );
-
+                const equipment = getEquipmentById(equipmentTypeId);
                 if (!equipment) return;
-
-                totalCredits += (equipment.credits || 0) * diff;
-                totalCoins += (equipment.coins || 0) * diff;
 
                 for (let i = 0; i < diff; i++) {
                     missingVehicleIds.push(`equipment:${equipmentTypeId}`);
@@ -1958,14 +2448,20 @@
                     : equipment.caption
                 );
 
+                totalCredits += (equipment.credits || 0) * diff;
+                totalCoins += (equipment.coins || 0) * diff;
+
                 return;
             }
 
+            // Fahrzeug / AB / Anhänger
             let typeId = c.typeId != null ? String(c.typeId) : null;
 
             if (!typeId) {
                 const vtEntry = Object.entries(vehicleTypeMap).find(
-                    ([id, v]) => (v.caption || '').trim() === (c.caption || '').trim()
+                    ([id, v]) =>
+                    (v.caption || '').trim() ===
+                    (c.caption || '').trim()
                 );
 
                 if (vtEntry) typeId = String(vtEntry[0]);
@@ -1978,21 +2474,9 @@
 
             if (diff <= 0) return;
 
-            const status = getExtensionStatusForVehicle(
-                building,
-                parseInt(typeId, 10),
-                lssmBuildingDefs
-            );
-
-            if (status !== 'ok' && status !== null) return;
-
             const vt = vehicleTypeMap[typeId];
 
-            if (vt) {
-                totalCredits += (vt.credits || 0) * diff;
-                totalCoins += (vt.coins || 0) * diff;
-            }
-
+            // IMMER anzeigen – unabhängig vom Erweiterungsstatus
             for (let i = 0; i < diff; i++) {
                 missingVehicleIds.push(parseInt(typeId, 10));
             }
@@ -2002,6 +2486,14 @@
                 ? `${diff}x ${c.caption}`
                 : c.caption
             );
+
+            // Kosten ebenfalls nur anhand des Fahrzeugs berechnen.
+            // Ob es tatsächlich kaufbar ist, entscheidet später
+            // getBuyableMissingVehicles().
+            if (vt) {
+                totalCredits += (vt.credits || 0) * diff;
+                totalCoins += (vt.coins || 0) * diff;
+            }
         });
 
         return {
@@ -2016,6 +2508,7 @@
     async function buyVehicles(rows, currency, confirmBeforeBuy = true, controller = null, progressText = null, progressBar = null, spinner = null, cancelBtn = null) {
         if (!rows || rows.length === 0) return;
         if (!controller) controller = new AbortController();
+
         let cancelRequested = false;
 
         // Buttons sperren
@@ -2027,60 +2520,107 @@
 
         // Progressbar
         const container = document.getElementById('fm-progress-container');
-        const isDynamicUI = !progressText || !progressBar || !spinner || !cancelBtn;
+        const isDynamicUI =
+              !progressText ||
+              !progressBar ||
+              !spinner ||
+              !cancelBtn;
 
         if (isDynamicUI) {
             if (!container) return;
+
             container.style.display = 'block';
             container.style.padding = '8px';
             container.style.border = '1px solid #444';
             container.style.borderRadius = '6px';
             container.style.background = 'rgba(0,0,0,0.1)';
             container.style.opacity = '1';
+
             container.innerHTML = `
             <div style="margin-bottom:6px;">
                 <span id="fm-spinner">⏳</span>
                 <span id="fm-progress-text">Kauf gestartet...</span>
             </div>
+
             <div style="width:100%;background:#333;height:12px;border-radius:4px;overflow:hidden;margin-bottom:6px;">
-                <div id="fm-progress-bar" style="width:0%;height:100%;background:#4caf50;"></div>
+                <div id="fm-progress-bar"
+                     style="width:0%;height:100%;background:#4caf50;"></div>
             </div>
+
             <div style="text-align:right;">
-                <button id="fm-cancel-btn" class="btn btn-warning btn-xs">⛔ Abbrechen</button>
+                <button id="fm-cancel-btn"
+                        class="btn btn-warning btn-xs">
+                    ⛔ Abbrechen
+                </button>
             </div>
         `;
+
             await new Promise(r => setTimeout(r, 0));
-            progressText = document.getElementById('fm-progress-text');
-            progressBar = document.getElementById('fm-progress-bar');
-            spinner = document.getElementById('fm-spinner');
-            cancelBtn = document.getElementById('fm-cancel-btn');
+
+            progressText =
+                document.getElementById('fm-progress-text');
+
+            progressBar =
+                document.getElementById('fm-progress-bar');
+
+            spinner =
+                document.getElementById('fm-spinner');
+
+            cancelBtn =
+                document.getElementById('fm-cancel-btn');
         }
 
         // Abbrechen
         cancelBtn.onclick = () => {
             cancelRequested = true;
             controller.abort();
+
             cancelBtn.disabled = true;
             cancelBtn.textContent = 'Wird abgebrochen...';
-            if (spinner) spinner.textContent = '⛔';
+
+            if (spinner) {
+                spinner.textContent = '⛔';
+            }
         };
 
         setAllButtonsDisabled(true, cancelBtn);
 
         try {
-            // Kaufplan erstellen
+            /*
+         * =========================================================
+         * KAUFPLAN ERSTELLEN
+         * =========================================================
+         */
+
             const buyPlanMap = {};
             let totalWanted = 0;
 
             rows.forEach(row => {
-                const items = JSON.parse(row.dataset.missingVehicleIds || '[]');
-                const buildingId = Number(row.dataset.buildingId);
+                const items =
+                      JSON.parse(
+                          row.dataset.missingVehicleIds || '[]'
+                      );
+
+                const buildingId =
+                      Number(row.dataset.buildingId);
 
                 items.forEach(item => {
                     const itemString = String(item);
-                    const itemType = itemString.startsWith('equipment:') ? 'equipment' : 'vehicle';
-                    const itemId = itemType === 'equipment' ? itemString.substring('equipment:'.length) : Number(itemString);
-                    const key = `${buildingId}-${itemType}-${itemId}`;
+
+                    const itemType =
+                          itemString.startsWith('equipment:')
+                    ? 'equipment'
+                    : 'vehicle';
+
+                    const itemId =
+                          itemType === 'equipment'
+                    ? itemString.substring(
+                        'equipment:'.length
+                    )
+                    : Number(itemString);
+
+                    const key =
+                          `${buildingId}-${itemType}-${itemId}`;
 
                     if (!buyPlanMap[key]) {
                         buyPlanMap[key] = {
@@ -2097,128 +2637,440 @@
             });
 
             if (totalWanted === 0) {
-                if (progressText) progressText.textContent = 'Keine fehlenden Fahrzeuge oder RCs vorhanden.';
-                if (spinner) spinner.textContent = 'ℹ️';
+                if (progressText) {
+                    progressText.textContent =
+                        'Keine fehlenden Fahrzeuge oder RCs vorhanden.';
+                }
+
+                if (spinner) {
+                    spinner.textContent = 'ℹ️';
+                }
+
                 return;
             }
 
-            // Aktuelle Fahrzeuge laden
+            /*
+         * =========================================================
+         * AKTUELLE FAHRZEUGE LADEN
+         * =========================================================
+         */
+
             let freshVehiclesData = [];
 
             try {
-                const res = await fetch('/api/vehicles', { signal: controller.signal });
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const res = await fetch(
+                    '/api/vehicles',
+                    { signal: controller.signal }
+                );
+
+                if (!res.ok) {
+                    throw new Error(`HTTP ${res.status}`);
+                }
+
                 freshVehiclesData = await res.json();
+
             } catch (e) {
                 if (e.name === 'AbortError') {
                     cancelRequested = true;
                     return;
                 }
-                console.error('[FM] Fehler beim Nachladen der Fahrzeugliste:', e);
-                alert('Fehler beim Nachladen der aktuellen Fahrzeugliste. Kauf abgebrochen.');
+
+                console.error(
+                    '[FM] Fehler beim Nachladen der Fahrzeugliste:',
+                    e
+                );
+
+                alert(
+                    'Fehler beim Nachladen der aktuellen Fahrzeugliste. Kauf abgebrochen.'
+                );
+
                 return;
             }
 
             const freshVehicleMap = {};
+
             freshVehiclesData.forEach(v => {
-                const buildingId = Number(v.building_id);
-                if (!freshVehicleMap[buildingId]) freshVehicleMap[buildingId] = [];
+                const buildingId =
+                      Number(v.building_id);
+
+                if (!freshVehicleMap[buildingId]) {
+                    freshVehicleMap[buildingId] = [];
+                }
+
                 freshVehicleMap[buildingId].push(v);
             });
 
-            // Kaufliste erstellen
+            /*
+         * =========================================================
+         * KAUFLISTE ERSTELLEN
+         * =========================================================
+         */
+
             const requestsByBuilding = {};
 
             Object.values(buyPlanMap).forEach(request => {
-                const buildingId = Number(request.buildingId);
-                if (!requestsByBuilding[buildingId]) requestsByBuilding[buildingId] = [];
+                const buildingId =
+                      Number(request.buildingId);
+
+                if (!requestsByBuilding[buildingId]) {
+                    requestsByBuilding[buildingId] = [];
+                }
+
                 requestsByBuilding[buildingId].push(request);
             });
 
             const filteredBuyList = [];
 
-            Object.entries(requestsByBuilding).forEach(([buildingIdString, requests]) => {
-                const buildingId = Number(buildingIdString);
-                const buildingObj = (buildingDataGlobal || []).find(b => Number(b.id) === buildingId);
-                let freeSlots = Infinity;
+            let wantedVehicles = 0;
+            let actualVehiclesToBuy = 0;
 
-                if (buildingObj) {
-                    try {
-                        const max = calcMaxParkingLots(buildingObj, lssmBuildingDefsGlobal);
-                        const current = (freshVehicleMap[buildingId] || []).length;
-                        freeSlots = Math.max(max - current, 0);
-                    } catch {}
-                }
+            let wantedEquipment = 0;
+            let actualEquipmentToBuy = 0;
 
-                requests.forEach(request => {
-                    const { itemType, itemId, wanted } = request;
+            let blockedByParking = 0;
+            let blockedByStorage = 0;
+            let blockedByNoStorage = 0;
 
-                    if (itemType === 'equipment') {
-                        for (let i = 0; i < wanted; i++) {
+            /*
+         * =========================================================
+         * JEDE WACHE PRÜFEN
+         * =========================================================
+         */
+
+            Object.entries(requestsByBuilding).forEach(
+                ([buildingIdString, requests]) => {
+
+                    const buildingId =
+                          Number(buildingIdString);
+
+                    const buildingObj =
+                          (buildingDataGlobal || []).find(
+                              b => Number(b.id) === buildingId
+                          );
+
+                    /*
+                 * -------------------------------------------------
+                 * FAHRZEUG-STELLPLÄTZE
+                 * -------------------------------------------------
+                 */
+
+                    let freeSlots = Infinity;
+
+                    if (buildingObj) {
+                        try {
+                            const max =
+                                  calcMaxParkingLots(
+                                      buildingObj,
+                                      lssmBuildingDefsGlobal
+                                  );
+
+                            const current =
+                                  (
+                                      freshVehicleMap[buildingId] || []
+                                  ).length;
+
+                            freeSlots =
+                                Math.max(
+                                max - current,
+                                0
+                            );
+
+                        } catch {
+                            freeSlots = 0;
+                        }
+                    }
+
+                    /*
+                 * -------------------------------------------------
+                 * LAGERPLATZ
+                 * -------------------------------------------------
+                 */
+
+                    const storage =
+                          getBuildingStorageInfo(
+                              buildingObj
+                          );
+
+                    let remainingStorage =
+                        storage.free;
+
+                    /*
+                 * -------------------------------------------------
+                 * REQUESTS DIESER WACHE
+                 * -------------------------------------------------
+                 */
+
+                    requests.forEach(request => {
+                        const {
+                            itemType,
+                            itemId,
+                            wanted
+                        } = request;
+
+                        /*
+                     * =================================================
+                     * RC / EQUIPMENT
+                     * =================================================
+                     */
+
+                        if (itemType === 'equipment') {
+                            wantedEquipment += wanted;
+
+                            const equipment =
+                                  getEquipmentById(itemId);
+
+                            if (!equipment) {
+                                console.warn(
+                                    '[FM] RC-Daten nicht gefunden:',
+                                    itemId
+                                );
+
+                                blockedByStorage += wanted;
+                                return;
+                            }
+
+                            const size =
+                                  Number(
+                                      equipment.size || 0
+                                  );
+
+                            /*
+                         * Ohne Lager können keine RCs gekauft werden.
+                         */
+                            if (
+                                !storage.hasStorage ||
+                                size <= 0
+                            ) {
+                                blockedByNoStorage += wanted;
+                                return;
+                            }
+
+                            /*
+                         * Lager existiert, hat aber keinen freien Platz.
+                         */
+                            if (
+                                remainingStorage <= 0
+                            ) {
+                                blockedByStorage += wanted;
+                                return;
+                            }
+
+                            /*
+                         * Wie viele Stück passen noch ins Lager?
+                         */
+                            const maxBuyable =
+                                  Math.min(
+                                      wanted,
+                                      Math.floor(
+                                          remainingStorage / size
+                                      )
+                                  );
+
+                            if (maxBuyable <= 0) {
+                                blockedByStorage += wanted;
+                                return;
+                            }
+
+                            /*
+                         * Kaufbare RCs hinzufügen.
+                         */
+                            for (
+                                let i = 0;
+                                i < maxBuyable;
+                                i++
+                            ) {
+                                filteredBuyList.push({
+                                    buildingId,
+                                    itemType: 'equipment',
+                                    itemId: String(itemId)
+                                });
+                            }
+
+                            actualEquipmentToBuy +=
+                                maxBuyable;
+
+                            /*
+                         * Lagerplatz reduzieren.
+                         */
+                            remainingStorage -=
+                                maxBuyable * size;
+
+                            /*
+                         * Nicht kaufbare Restmenge merken.
+                         */
+                            if (
+                                maxBuyable < wanted
+                            ) {
+                                blockedByStorage +=
+                                    wanted - maxBuyable;
+                            }
+
+                            return;
+                        }
+
+                        /*
+                     * =================================================
+                     * FAHRZEUG / AB / ANHÄNGER
+                     * =================================================
+                     */
+
+                        wantedVehicles += wanted;
+
+                        const toBuy =
+                              Math.min(
+                                  wanted,
+                                  freeSlots
+                              );
+
+                        for (
+                            let i = 0;
+                            i < toBuy;
+                            i++
+                        ) {
                             filteredBuyList.push({
                                 buildingId,
-                                itemType: 'equipment',
-                                itemId: String(itemId)
+                                itemType: 'vehicle',
+                                itemId: Number(itemId)
                             });
                         }
-                        return;
-                    }
 
-                    const toBuy = Math.min(wanted, freeSlots);
+                        actualVehiclesToBuy +=
+                            toBuy;
 
-                    for (let i = 0; i < toBuy; i++) {
-                        filteredBuyList.push({
-                            buildingId,
-                            itemType: 'vehicle',
-                            itemId: Number(itemId)
-                        });
-                    }
+                        const blocked =
+                              wanted - toBuy;
 
-                    freeSlots -= toBuy;
-                });
-            });
+                        if (blocked > 0) {
+                            blockedByParking += blocked;
+                        }
 
-            // Stellplätze prüfen
-            const wantedVehicles = Object.values(buyPlanMap)
-            .filter(x => x.itemType === 'vehicle')
-            .reduce((sum, x) => sum + x.wanted, 0);
+                        freeSlots -= toBuy;
+                    });
+                }
+            );
 
-            const actualVehiclesToBuy = filteredBuyList.filter(x => x.itemType === 'vehicle').length;
+            const actualToBuy =
+                  filteredBuyList.length;
 
-            if (actualVehiclesToBuy < wantedVehicles) {
-                const proceed = confirm(
-                    `Es sind nicht genügend freie Stellplätze vorhanden.\n\n` +
-                    `Von ${wantedVehicles} gewünschten Fahrzeugen können nur ${actualVehiclesToBuy} Fahrzeuge gekauft werden.\n\n` +
-                    `Die gewünschten RCs werden davon nicht beeinflusst.\n\n` +
-                    `Soll der Kauf trotzdem durchgeführt werden?`
-                );
+            if (actualToBuy === 0) {
+                let message =
+                    'Es kann nichts gekauft werden.\n\n';
 
-                if (!proceed) return;
+                if (blockedByParking > 0) {
+                    message +=
+                        `${blockedByParking} Fahrzeug(e) ` +
+                        `haben keinen freien Stellplatz.\n`;
+                }
+
+                if (blockedByNoStorage > 0) {
+                    message +=
+                        `${blockedByNoStorage} RC(s) ` +
+                        `können nicht gekauft werden, ` +
+                        `weil kein nutzbares Lager vorhanden ist.\n`;
+                }
+
+                if (blockedByStorage > 0) {
+                    message +=
+                        `${blockedByStorage} RC(s) ` +
+                        `passen nicht mehr in das vorhandene Lager.\n`;
+                }
+
+                alert(message);
+
+                if (progressText) {
+                    progressText.textContent =
+                        'Keine kaufbaren Fahrzeuge oder RCs.';
+                }
+
+                if (spinner) {
+                    spinner.textContent = 'ℹ️';
+                }
+
+                return;
             }
 
-            // Kosten berechnen
+            const warnings = [];
+
+            if (blockedByParking > 0) {
+                warnings.push(
+                    `${blockedByParking} Fahrzeug(e) ` +
+                    `können wegen fehlender Stellplätze nicht gekauft werden.`
+                );
+            }
+
+            if (
+                blockedByNoStorage > 0
+            ) {
+                warnings.push(
+                    `${blockedByNoStorage} RC(s) können nicht gekauft werden, ` +
+                    `weil kein nutzbares Lager vorhanden ist.`
+                );
+            }
+
+            if (
+                blockedByStorage > 0
+            ) {
+                warnings.push(
+                    `${blockedByStorage} RC(s) können wegen fehlendem Lagerplatz nicht gekauft werden.`
+                );
+            }
+
+            if (
+                warnings.length > 0 &&
+                confirmBeforeBuy
+            ) {
+                const proceed =
+                      confirm(
+                          warnings.join('\n') +
+                          '\n\n' +
+                          'Die kaufbaren Fahrzeuge und RCs trotzdem kaufen?'
+                      );
+
+                if (!proceed) {
+                    return;
+                }
+            }
+
             let totalCost = 0;
 
             filteredBuyList.forEach(item => {
                 let itemData;
 
                 if (item.itemType === 'equipment') {
-                    itemData = (equipmentDataGlobal || []).find(e => String(e.id) === String(item.itemId));
+                    itemData =
+                        getEquipmentById(
+                        item.itemId
+                    );
                 } else {
-                    itemData = vehicleTypeMapGlobal[item.itemId];
+                    itemData =
+                        vehicleTypeMapGlobal[
+                        item.itemId
+                    ];
                 }
 
                 if (!itemData) {
-                    console.warn('[FM] Keine Daten für Kaufobjekt gefunden:', item);
+                    console.warn(
+                        '[FM] Keine Daten für Kaufobjekt gefunden:',
+                        item
+                    );
+
                     return;
                 }
 
-                totalCost += currency === 'credits'
-                    ? Number(itemData.credits || 0)
-                : Number(itemData.coins || 0);
+                totalCost +=
+                    currency === 'credits'
+                    ? Number(
+                    itemData.credits || 0
+                )
+                : Number(
+                    itemData.coins || 0
+                );
             });
 
-            const available = currency === 'credits' ? currentCredits : currentCoins;
+            const available =
+                  currency === 'credits'
+            ? currentCredits
+            : currentCoins;
 
             if (totalCost > available) {
                 alert(
@@ -2226,64 +3078,97 @@
                     `Benötigt: ${totalCost.toLocaleString()}\n` +
                     `Vorhanden: ${available.toLocaleString()}`
                 );
+
                 return;
             }
 
-            // Kauf bestätigen
             if (confirmBeforeBuy) {
-                const vehicleCount = filteredBuyList.filter(x => x.itemType === 'vehicle').length;
-                const equipmentCount = filteredBuyList.filter(x => x.itemType === 'equipment').length;
+                const vehicleCount =
+                      filteredBuyList.filter(
+                          x => x.itemType === 'vehicle'
+                      ).length;
+
+                const equipmentCount =
+                      filteredBuyList.filter(
+                          x => x.itemType === 'equipment'
+                      ).length;
 
                 const parts = [];
 
                 if (vehicleCount > 0) {
-                    parts.push(`${vehicleCount} Fahrzeug${vehicleCount === 1 ? '' : 'e'}`);
+                    parts.push(
+                        `${vehicleCount} Fahrzeug` +
+                        `${vehicleCount === 1 ? '' : 'e'}`
+                    );
                 }
 
                 if (equipmentCount > 0) {
-                    parts.push(`${equipmentCount} RC${equipmentCount === 1 ? '' : 's'}`);
+                    parts.push(
+                        `${equipmentCount} RC` +
+                        `${equipmentCount === 1 ? '' : 's'}`
+                    );
                 }
 
-                const proceed = confirm(
-                    `Möchtest du wirklich ${parts.join(' und ')} für ` +
-                    `${totalCost.toLocaleString()} ${currency === 'credits' ? 'Credits' : 'Coins'} kaufen?`
-                );
+                const proceed =
+                      confirm(
+                          `Möchtest du wirklich ${parts.join(' und ')} für ` +
+                          `${totalCost.toLocaleString()} ` +
+                          `${currency === 'credits' ? 'Credits' : 'Coins'} kaufen?`
+                      );
 
                 if (!proceed) return;
             }
 
-            // Kaufen
             let boughtCount = 0;
 
-            for (let i = 0; i < filteredBuyList.length; i++) {
+            for (
+                let i = 0;
+                i < filteredBuyList.length;
+                i++
+            ) {
                 if (cancelRequested) break;
 
-                const item = filteredBuyList[i];
-                const { buildingId, itemType, itemId } = item;
+                const item =
+                      filteredBuyList[i];
+
+                const {
+                    buildingId,
+                    itemType,
+                    itemId
+                } = item;
 
                 let itemData;
 
                 if (itemType === 'equipment') {
-                    itemData = (equipmentDataGlobal || []).find(
-                        e => String(e.id) === String(itemId)
-                    );
+                    itemData =
+                        getEquipmentById(itemId);
                 } else {
-                    itemData = vehicleTypeMapGlobal[itemId];
+                    itemData =
+                        vehicleTypeMapGlobal[itemId];
                 }
 
                 if (!itemData) {
-                    console.warn('[FM] Kaufobjekt nicht gefunden:', item);
+                    console.warn(
+                        '[FM] Kaufobjekt nicht gefunden:',
+                        item
+                    );
+
                     continue;
                 }
 
                 const url = itemType === 'equipment'
-                ? `/buildings/${buildingId}/equipment/${itemId}/${currency}?building=${buildingId}`
+                ? `/buildings/${buildingId}/equipment/${itemId}/${currency}?return_tab=rolling_containers`
                 : `/buildings/${buildingId}/vehicle/${buildingId}/${itemId}/${currency}?building=${buildingId}`;
 
                 try {
-                    const res = await fetch(url, {
-                        signal: controller.signal
-                    });
+                    const res =
+                          await fetch(
+                              url,
+                              {
+                                  signal:
+                                  controller.signal
+                              }
+                          );
 
                     if (res.ok) {
                         boughtCount++;
@@ -2291,39 +3176,65 @@
                         let purchaseLog = [];
 
                         try {
-                            purchaseLog = JSON.parse(
-                                localStorage.getItem('fm-purchase-log')
+                            purchaseLog =
+                                JSON.parse(
+                                localStorage.getItem(
+                                    'fm-purchase-log'
+                                )
                             ) || [];
                         } catch {}
 
-                        const buildingObj = (buildingDataGlobal || []).find(
-                            b => Number(b.id) === Number(buildingId)
-                        );
+                        const buildingObj =
+                              (buildingDataGlobal || []).find(
+                                  b =>
+                                  Number(b.id) ===
+                                  Number(buildingId)
+                              );
 
                         purchaseLog.push({
                             time: Date.now(),
                             buildingId,
-                            buildingName: buildingObj?.caption || `Wache ${buildingId}`,
+                            buildingName:
+                            buildingObj?.caption ||
+                            `Wache ${buildingId}`,
                             itemType,
                             itemId,
-                            vehicleName: itemData.caption || (
+
+                            vehicleName:
+                            itemData.caption ||
+                            (
                                 itemType === 'equipment'
                                 ? `Equipment ${itemId}`
                                 : `Fahrzeug ${itemId}`
                             ),
-                            price: currency === 'credits'
-                            ? Number(itemData.credits || 0)
-                            : Number(itemData.coins || 0),
-                            currency: currency === 'credits' ? 'Credits' : 'Coins'
+
+                            price:
+                            currency === 'credits'
+                            ? Number(
+                                itemData.credits || 0
+                            )
+                            : Number(
+                                itemData.coins || 0
+                            ),
+
+                            currency:
+                            currency === 'credits'
+                            ? 'Credits'
+                            : 'Coins'
                         });
 
                         localStorage.setItem(
                             'fm-purchase-log',
-                            JSON.stringify(purchaseLog)
+                            JSON.stringify(
+                                purchaseLog
+                            )
                         );
                     }
+
                 } catch (err) {
-                    if (err.name === 'AbortError') {
+                    if (
+                        err.name === 'AbortError'
+                    ) {
                         cancelRequested = true;
                         break;
                     }
@@ -2334,35 +3245,57 @@
                     );
                 }
 
-                if (progressText && progressBar) {
+                if (
+                    progressText &&
+                    progressBar
+                ) {
                     progressText.textContent =
                         `${i + 1} / ${filteredBuyList.length} verarbeitet`;
 
                     progressBar.style.width =
-                        `${Math.round(((i + 1) / filteredBuyList.length) * 100)}%`;
+                        `${Math.round(
+                        ((i + 1) /
+                         filteredBuyList.length) *
+                        100
+                    )}%`;
                 }
 
-                if (confirmBeforeBuy && !cancelRequested) {
-                    await new Promise(r => setTimeout(r, 500));
+                if (
+                    confirmBeforeBuy &&
+                    !cancelRequested
+                ) {
+                    await new Promise(
+                        r => setTimeout(r, 500)
+                    );
                 }
             }
 
-            // Abschluss
             if (cancelRequested) {
-                if (progressText && spinner) {
+                if (
+                    progressText &&
+                    spinner
+                ) {
                     progressText.textContent =
-                        `Der Kauf wurde abgebrochen. Es wurden ${boughtCount} Käufe durchgeführt.`;
+                        `Der Kauf wurde abgebrochen. ` +
+                        `Es wurden ${boughtCount} Käufe durchgeführt.`;
+
                     spinner.textContent = '⛔';
                 }
 
-                await new Promise(r => setTimeout(r, 5000));
-            } else if (progressText && spinner) {
+                await new Promise(
+                    r => setTimeout(r, 5000)
+                );
+
+            } else if (
+                progressText &&
+                spinner
+            ) {
                 progressText.textContent =
                     `Kauf abgeschlossen (${boughtCount} Käufe)`;
+
                 spinner.textContent = '✅';
             }
 
-            // Daten aktualisieren
             await loadBuildingsFromAPI();
             updateUserResources();
             updateSelectedCosts();
