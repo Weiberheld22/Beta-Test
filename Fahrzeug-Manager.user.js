@@ -18,11 +18,9 @@
     let vehicleDataGlobal = [];
     let vehicleMapGlobal = {};
     let vehicleTypeMapGlobal = {};
-
     let equipmentTypeMapGlobal = {};
     let equipmentDataGlobal = [];
     let equipmentMapGlobal = {};
-
     let lssmBuildingDefsGlobal = null;
     let currentCredits = 0;
     let currentCoins = 0;
@@ -48,7 +46,7 @@
     };
     const specialEquipmentBuildings = {
         police_lift: [13],
-        rescue_lift: [5], // RTH-Station-Gebäudetyp hier ergänzen
+        rescue_lift: [5],
         mountain_drone: [25]
     };
 
@@ -147,61 +145,6 @@
       </div>
     </div>`;
 
-    // Helper: fügt Modal nur ein, wenn noch nicht vorhanden
-    function ensureModalInserted(modalId, html) {
-        if (!document.getElementById(modalId)) {
-            document.body.insertAdjacentHTML('beforeend', html);
-        }
-    }
-
-    document.addEventListener('click', e => {
-        if (e.target && e.target.id === 'fm-config-btn') {
-            e.preventDefault();
-            ensureModalInserted('fahrzeugConfigModal', configModalHTML);
-            $('#fahrzeugConfigModal').modal('show');
-            loadVehicleConfig();
-        }
-    }); // Konfigbutton
-    document.addEventListener('click', e => {
-        if (e.target && e.target.id === 'fm-log-btn') {
-            e.preventDefault();
-            ensureModalInserted('fahrzeugLogModal', logModalHTML);
-            $('#fahrzeugLogModal').modal('show');
-            showPurchaseLog();
-        }
-    }); // Kaufprotokoll
-    document.addEventListener('click', e => {
-        if (e.target && e.target.id === 'fm-reset-log-btn') {
-            if (confirm('Möchtest du das Kaufprotokoll wirklich zurücksetzen?')) {
-                const now = Date.now();
-                localStorage.setItem('fm-purchase-log', JSON.stringify([]));
-                localStorage.setItem('fm-purchase-log-reset', now.toString());
-                showPurchaseLog(); // Aktualisiere die Anzeige sofort
-            }
-        }
-    }); // Resetbutton
-    document.addEventListener('click', e => {
-        if(e.target && e.target.id==='fahrzeug-manager-btn'){
-            e.preventDefault();
-            ensureModalInserted('fahrzeugManagerModal', modalHTML);
-            $('#fahrzeugManagerModal').modal('show');
-            updateUserResources();
-            loadBuildingsFromAPI();
-        }
-    }); // Managerbutton
-    document.addEventListener('click', e => {
-        if (e.target && e.target.id === 'fm-export-profiles') {
-            e.preventDefault();
-            exportAllProfiles();
-        }
-    }); // Exportbutton
-    document.addEventListener('click', e => {
-        if (e.target && e.target.id === 'fm-import-profiles') {
-            e.preventDefault();
-            importAllProfiles();
-        }
-    }); // Importbutton
-
     // CSS
     GM_addStyle(`
         #fahrzeugManagerModal .modal-dialog { max-width: 2500px; width: 95%; margin: 30px auto; }
@@ -263,8 +206,6 @@
         const bTypeId = String(building.building_type);
         const lssmDef = lssmBuildings?.[bTypeId];
         if (!lssmDef) return (building.level ?? 0) + 1;
-
-        // Spezialwachen: startParkingLots + alle Erweiterungen mit givesParkingLots
         let max = lssmDef.startParkingLots || 0;
         if (Array.isArray(building.extensions)) {
             for (const ext of building.extensions) {
@@ -295,8 +236,20 @@
     async function loadVehicleTypesLSSM() {
         try {
             const res = await fetch('https://api.lss-manager.de/de_DE/vehicles');
+
+            if (!res.ok) {
+                throw new Error(`HTTP ${res.status}`);
+            }
+
             const data = await res.json();
-            return data;
+            return Object.entries(data).reduce((map, [id, vehicle]) => {
+                map[id] = {
+                    ...vehicle,
+                    id: Number(id)
+                };
+
+                return map;
+            }, {});
         } catch (e) {
             console.error('Fehler beim Laden der LSSM Fahrzeugtypen:', e);
             return {};
@@ -306,15 +259,12 @@
     // LSSM Equipment-Typen laden
     async function loadEquipmentTypesLSSM() {
         const url = 'https://raw.githubusercontent.com/LSS-Manager/LSSM-V.4/dev/src/i18n/de_DE/equipment.ts';
-
         const text = await fetch(url).then(r => {
             if (!r.ok) throw new Error(`HTTP ${r.status}`);
             return r.text();
         });
-
         const equipment = {};
         const regex = /id:\s*['"]([^'"]+)['"][\s\S]*?caption:\s*['"]([^'"]+)['"][\s\S]*?size:\s*(\d+)[\s\S]*?credits:\s*([\d_]+)[\s\S]*?coins:\s*(\d+)/g;
-
         let match;
         while ((match = regex.exec(text)) !== null) {
             const [, id, caption, size, credits, coins] = match;
@@ -329,7 +279,6 @@
                 type: 'equipment'
             };
         }
-
         return equipment;
     }
 
@@ -359,7 +308,6 @@
 
     function buildEquipmentMap(equipments) {
         const map = {};
-
         equipments.forEach(equipment => {
             const buildingId =
                   equipment.building_id ??
@@ -372,7 +320,6 @@
                   equipment.typeId;
 
             if (buildingId == null || typeId == null) return;
-
             if (!map[buildingId]) {
                 map[buildingId] = {};
             }
@@ -382,7 +329,6 @@
             map[buildingId][key] =
                 (map[buildingId][key] || 0) + 1;
         });
-
         return map;
     }
 
@@ -415,23 +361,15 @@
         const content = document.getElementById('fahrzeug-manager-content');
         content.innerHTML = '<p><span class="glyphicon glyphicon-refresh glyphicon-spin"></span> Lade die eingestellten Konfigurationen, je nach Auswahl kann dies einen Augenblick dauern.</p>';
         try {
-            const [
-                buildings,
-                vehiclesRaw,
-                vehicleTypeMap,
-                lssmBuildingDefs,
-                equipmentTypeMap,
-                equipments
-            ] = await Promise.all([
-                fetch('/api/buildings').then(r => r.json()),
-                loadVehiclesFromAPI_raw(),
-                loadVehicleTypesLSSM(),
-                loadLSSMBuildingDefs(),
-                loadEquipmentTypesLSSM(),
-                loadEquipmentsFromAPI()
-            ]);
-
-            // Globale Speicherung
+            const [buildings, vehiclesRaw, vehicleTypeMap, lssmBuildingDefs, equipmentTypeMap, equipments
+                  ] = await Promise.all([
+                      fetch('/api/buildings').then(r => r.json()),
+                      loadVehiclesFromAPI_raw(),
+                      loadVehicleTypesLSSM(),
+                      loadLSSMBuildingDefs(),
+                      loadEquipmentTypesLSSM(),
+                      loadEquipmentsFromAPI()
+                  ]);
             buildingDataGlobal = buildings;
             vehicleDataGlobal = vehiclesRaw;
             vehicleTypeMapGlobal = vehicleTypeMap;
@@ -439,7 +377,6 @@
             equipmentDataGlobal = Object.values(equipmentTypeMap);
             equipmentMapGlobal = buildEquipmentMap(equipments);
 
-            // vehicleMap aufbauen
             const vehicleMap = {};
             vehicleDataGlobal.forEach(v => {
                 if (!vehicleMap[v.building_id]) vehicleMap[v.building_id] = [];
@@ -447,7 +384,6 @@
             });
             vehicleMapGlobal = vehicleMap;
 
-            // leitstellen map und vehicle_count berechnen
             const leitstellenMap = {};
             buildings.forEach(b => { if(b.building_type===7 || b.is_leitstelle) leitstellenMap[b.id]=b.caption; });
             buildings.forEach(b => {
@@ -457,8 +393,6 @@
 
             const filteredBuildings = buildings.filter(b=>getBuildingTypeName(b)!==null);
             content.innerHTML = buildBuildingsByType(filteredBuildings, vehicleMap, vehicleTypeMap, lssmBuildingDefsGlobal);
-
-            // Spoiler eventlisteners
             document.querySelectorAll('.fm-spoiler-header').forEach(header=>{
                 header.addEventListener('click', ()=>{
                     const targetId = header.dataset.target;
@@ -467,8 +401,6 @@
                     });
                 });
             });
-
-            // Listener für die Tabellen (Select-All, Filter, Checkboxen) anfügen
             attachAllTableListeners();
         } catch(err) {
             content.innerHTML = `<div class="alert alert-danger">❌ Fehler beim Laden der Daten: ${err}</div>`;
@@ -501,13 +433,9 @@
 
                 const equipmentForBuilding = Object.values(equipmentDataGlobal).filter(e => {
                     const allowedBuildings = specialEquipmentBuildings[e.id];
-
-                    // Normale RC nur bei Feuerwachen
                     if (!allowedBuildings) {
                         return buildingId === 0;
                     }
-
-                    // Sonder-RC nur bei den dafür vorgesehenen Gebäuden
                     return allowedBuildings.includes(buildingId);
                 });
 
@@ -568,8 +496,6 @@
     // Maximale Stellplätze berechnen
     function getMaxVehiclesForBuilding(building, lssmBuildingDefs) {
         let max = building.level !== undefined ? building.level + 1 : 1;
-
-        // Spezialwachen: Stellplätze durch Erweiterungen (SEG/THW etc.)
         if (Array.isArray(building.extensions) && lssmBuildingDefs) {
             building.extensions.forEach(ext => {
                 max += getParkingLotsForExtension(building.building_type, ext.type_id ?? ext.caption, lssmBuildingDefs);
@@ -614,138 +540,36 @@
 
         const extensions = buildingDef.extensions;
 
-        /*
-     * Anhänger / AB:
-     *
-     * Bei allen Anhängern zuerst nach einer tatsächlichen
-     * Stellplatz-Reservierung suchen.
-     *
-     * Dadurch ist nicht entscheidend, ob das Zugfahrzeug vorhanden
-     * ist, sondern ob die benötigte Erweiterung/Stellplatz vorhanden ist.
-     */
-        if (vehicleType.isTrailer === true) {
-            const reservationExtensions = extensions.filter(extDef =>
-                                                            Array.isArray(extDef.parkingLotReservations) &&
-                                                            extDef.parkingLotReservations.some(reservation =>
-                                                                                               Array.isArray(reservation) &&
-                                                                                               reservation.some(id => Number(id) === typeId)
-                                                                                              )
-                                                           );
-
-            if (reservationExtensions.length > 0) {
-                const matchingExtDef = reservationExtensions[0];
-
-                const realExtension = building.extensions?.find(ext =>
-                                                                ext.caption &&
-                                                                matchingExtDef.caption &&
-                                                                ext.caption.trim().toLowerCase() ===
-                                                                matchingExtDef.caption.trim().toLowerCase()
-                                                               );
-
-                if (!realExtension) {
-                    return 'missing';
-                }
-
-                if (
-                    realExtension.available === false &&
-                    realExtension.enabled === true
-                ) {
-                    return 'in_progress';
-                }
-
-                if (
-                    realExtension.available === true &&
-                    realExtension.enabled === false
-                ) {
-                    return 'ok';
-                }
-
-                return 'ok';
-            }
-
-            /*
-         * Kein reservierter Stellplatz gefunden.
-         *
-         * Einige spezielle Anhänger haben zwar eine eigene
-         * Erweiterung, aber keine parkingLotReservations.
-         * Diese Erweiterung darf weiterhin über unlocksVehicleTypes
-         * ermittelt werden.
-         */
-            const trailerExtension = extensions.find(extDef =>
-                                                     Array.isArray(extDef.unlocksVehicleTypes) &&
-                                                     extDef.unlocksVehicleTypes.some(id => Number(id) === typeId)
-                                                    );
-
-            if (!trailerExtension) {
-                return 'missing';
-            }
-
-            const realExtension = building.extensions?.find(ext =>
-                                                            ext.caption &&
-                                                            trailerExtension.caption &&
-                                                            ext.caption.trim().toLowerCase() ===
-                                                            trailerExtension.caption.trim().toLowerCase()
-                                                           );
-
-            if (!realExtension) {
-                return 'missing';
-            }
-
-            if (
-                realExtension.available === false &&
-                realExtension.enabled === true
-            ) {
-                return 'in_progress';
-            }
-
-            if (
-                realExtension.available === true &&
-                realExtension.enabled === false
-            ) {
-                return 'ok';
-            }
-
-            return 'ok';
-        }
-
-        /*
-     * Normale Fahrzeuge:
-     * Hier weiterhin über unlocksVehicleTypes prüfen.
-     */
         const matchingExtDef = extensions.find(extDef =>
                                                Array.isArray(extDef.unlocksVehicleTypes) &&
-                                               extDef.unlocksVehicleTypes.some(id => Number(id) === typeId)
+                                               extDef.unlocksVehicleTypes.some(
+            id => Number(id) === typeId
+        )
                                               );
-
         if (!matchingExtDef) {
             return null;
         }
-
         const realExtension = building.extensions?.find(ext =>
                                                         ext.caption &&
                                                         matchingExtDef.caption &&
                                                         ext.caption.trim().toLowerCase() ===
                                                         matchingExtDef.caption.trim().toLowerCase()
                                                        );
-
         if (!realExtension) {
             return 'missing';
         }
-
         if (
             realExtension.available === false &&
             realExtension.enabled === true
         ) {
             return 'in_progress';
         }
-
         if (
             realExtension.available === true &&
             realExtension.enabled === false
         ) {
             return 'ok';
         }
-
         return 'ok';
     }
 
@@ -1110,6 +934,45 @@
         const activeProfile = profilesData.activeProfile;
         const savedConfig = getActiveProfileConfig(tableId) || [];
         const firstStart = !hasProfiles;
+        const categories = {
+            fahrzeuge: { title: '🚒 Fahrzeuge', items: [] },
+            ab: { title: '🚛 AB-Rollcontainer', items: [] },
+            anhaenger: { title: '🛻 Anhänger', items: [] },
+            rc: { title: '📦 RC', items: [] }
+        };
+
+        let migratedProfileConfig = false;
+
+        savedConfig.forEach(saved => {
+            // RCs haben eigene IDs und werden hier nicht angefasst.
+            if ((saved.itemType || 'vehicle') === 'equipment') return;
+
+            const currentVehicle = vehicles.find(v =>
+                                                 (v.itemType || v.type || 'vehicle') === 'vehicle' &&
+                                                 v.caption &&
+                                                 saved.caption &&
+                                                 v.caption === saved.caption
+                                                );
+
+            if (!currentVehicle) return;
+
+            const currentTypeId = parseInt(currentVehicle.id, 10);
+            const savedTypeId = parseInt(saved.typeId, 10);
+
+            if (
+                Number.isInteger(currentTypeId) &&
+                savedTypeId !== currentTypeId
+            ) {
+
+                saved.typeId = currentTypeId;
+                migratedProfileConfig = true;
+            }
+        });
+
+        if (migratedProfileConfig) {
+            saveActiveProfileConfig(tableId, savedConfig);
+
+        }
 
         function getConfigCategory(vehicle) {
             const itemType = vehicle.itemType || vehicle.type || 'vehicle';
@@ -1126,13 +989,6 @@
 
             return 'fahrzeuge';
         }
-
-        const categories = {
-            fahrzeuge: { title: '🚒 Fahrzeuge', items: [] },
-            ab: { title: '🚛 AB-Rollcontainer', items: [] },
-            anhaenger: { title: '🛻 Anhänger', items: [] },
-            rc: { title: '📦 RC', items: [] }
-        };
 
         vehicles.forEach(vehicle => {
             const category = getConfigCategory(vehicle);
@@ -1795,18 +1651,8 @@
                         storageUpgrade.available === false &&
                         storageUpgrade.available_at
                     ) {
-                        const availableAt = new Date(
-                            String(storageUpgrade.available_at)
-                            .replace(' ', 'T')
-                        ).getTime();
-
-                        if (
-                            !Number.isNaN(availableAt) &&
-                            availableAt > Date.now()
-                        ) {
-                            return `<span style="color:orange;font-weight:bold;"
-                                           title="Lager im Bau">${displayName}</span>`;
-                        }
+                        return `<span style="color:orange;font-weight:bold;"
+                   title="Lager im Bau">${displayName}</span>`;
                     }
 
                     // ---------------------------------------------
@@ -2275,12 +2121,6 @@
 
             const itemType = c.itemType || c.type || 'vehicle';
             const requestedAmount = parseInt(c.amount, 10) || 1;
-
-            /*
-         * =========================================================
-         * RC / EQUIPMENT
-         * =========================================================
-         */
             if (itemType === 'equipment') {
                 const equipmentTypeId = String(c.typeId);
                 const ist =
@@ -2334,12 +2174,6 @@
 
                 return;
             }
-
-            /*
-         * =========================================================
-         * FAHRZEUG / AB / ANHÄNGER
-         * =========================================================
-         */
 
             let typeId =
                 c.typeId != null
@@ -2502,6 +2336,50 @@
             totalCoins,
             vehiclesIds: missingVehicleIds
         };
+    }
+
+    // Funktion zum füllen der Kaufprotokolltabelle
+    function showPurchaseLog() {
+        const content = document.getElementById('fahrzeug-log-content');
+        let log = [];
+        try { log = JSON.parse(localStorage.getItem('fm-purchase-log')) || []; } catch {}
+
+        if (log.length === 0) {
+            content.innerHTML = '<div class="alert alert-info">Keine Käufe protokolliert.</div>';
+            return;
+        }
+
+        let html = '<table class="table table-striped"><thead><tr><th>Zeitpunkt</th><th>Wache</th><th>Fahrzeug</th><th>Preis</th><th>Währung</th></tr></thead><tbody>';
+        log.slice().reverse().forEach(entry => {
+            const dateStr = new Date(entry.time).toLocaleString();
+            html += `<tr>
+            <td>${dateStr}</td>
+            <td>${entry.buildingName}</td>
+            <td>${entry.vehicleName}</td>
+            <td>${entry.price.toLocaleString()}</td>
+            <td>${entry.currency}</td>
+        </tr>`;
+        });
+        html += '</tbody></table>';
+        content.innerHTML = html;
+    }
+
+    // Aktuelle Credits/Coins holen und aktualisieren
+    async function updateUserResources(){
+        try {
+            const res = await fetch('/api/userinfo');
+            const data = await res.json();
+            currentCredits = data.credits_user_current || 0;
+            currentCoins = data.coins_user_current || 0;
+
+            document.getElementById('fm-credits').textContent = currentCredits.toLocaleString();
+            document.getElementById('fm-coins').textContent = currentCoins.toLocaleString();
+
+            // Buttons nachführen
+            updateBuyButtons();
+        } catch(e) {
+            console.warn(e);
+        }
     }
 
     // Kauffunktion für die Fahrzeuge
@@ -3319,7 +3197,60 @@
         return confirm('⚠️ Bist du dir sicher, Coins ausgeben zu wollen?\nCoins sind eine Währung die mit Echtgeld gekauft werden und sind für immer weg.');
     }
 
-    // Einzelkauf
+    // Helper: fügt Modal nur ein, wenn noch nicht vorhanden
+    function ensureModalInserted(modalId, html) {
+        if (!document.getElementById(modalId)) {
+            document.body.insertAdjacentHTML('beforeend', html);
+        }
+    }
+
+    document.addEventListener('click', e => {
+        if (e.target && e.target.id === 'fm-config-btn') {
+            e.preventDefault();
+            ensureModalInserted('fahrzeugConfigModal', configModalHTML);
+            $('#fahrzeugConfigModal').modal('show');
+            loadVehicleConfig();
+        }
+    }); // Konfigbutton
+    document.addEventListener('click', e => {
+        if (e.target && e.target.id === 'fm-log-btn') {
+            e.preventDefault();
+            ensureModalInserted('fahrzeugLogModal', logModalHTML);
+            $('#fahrzeugLogModal').modal('show');
+            showPurchaseLog();
+        }
+    }); // Kaufprotokoll
+    document.addEventListener('click', e => {
+        if (e.target && e.target.id === 'fm-reset-log-btn') {
+            if (confirm('Möchtest du das Kaufprotokoll wirklich zurücksetzen?')) {
+                const now = Date.now();
+                localStorage.setItem('fm-purchase-log', JSON.stringify([]));
+                localStorage.setItem('fm-purchase-log-reset', now.toString());
+                showPurchaseLog(); // Aktualisiere die Anzeige sofort
+            }
+        }
+    }); // Resetbutton
+    document.addEventListener('click', e => {
+        if(e.target && e.target.id==='fahrzeug-manager-btn'){
+            e.preventDefault();
+            ensureModalInserted('fahrzeugManagerModal', modalHTML);
+            $('#fahrzeugManagerModal').modal('show');
+            updateUserResources();
+            loadBuildingsFromAPI();
+        }
+    }); // Managerbutton
+    document.addEventListener('click', e => {
+        if (e.target && e.target.id === 'fm-export-profiles') {
+            e.preventDefault();
+            exportAllProfiles();
+        }
+    }); // Exportbutton
+    document.addEventListener('click', e => {
+        if (e.target && e.target.id === 'fm-import-profiles') {
+            e.preventDefault();
+            importAllProfiles();
+        }
+    }); // Importbutton
     document.addEventListener('click', async e => {
         if (e.target && (e.target.classList.contains('fm-buy-credit') || e.target.classList.contains('fm-buy-coin'))) {
             e.preventDefault();
@@ -3399,9 +3330,7 @@
                 setTimeout(() => container.style.display = 'none', 300);
             }
         }
-    });
-
-    // Sammelkauf
+    }); // Einzelkauf
     document.addEventListener('click', async e => {
         if (e.target && (e.target.classList.contains('fm-buy-selected-credits') || e.target.classList.contains('fm-buy-selected-coins'))) {
             e.preventDefault();
@@ -3423,55 +3352,7 @@
 
             await buyVehicles(selectedRows, currency, true);
         }
-    });
-
-    // Expose updateSelectedCosts globally in case listeners need it
-    window.fm_updateSelectedCosts = updateSelectedCosts;
-
-    // Funktion zum füllen der Kaufprotokolltabelle
-    function showPurchaseLog() {
-        const content = document.getElementById('fahrzeug-log-content');
-        let log = [];
-        try { log = JSON.parse(localStorage.getItem('fm-purchase-log')) || []; } catch {}
-
-        if (log.length === 0) {
-            content.innerHTML = '<div class="alert alert-info">Keine Käufe protokolliert.</div>';
-            return;
-        }
-
-        let html = '<table class="table table-striped"><thead><tr><th>Zeitpunkt</th><th>Wache</th><th>Fahrzeug</th><th>Preis</th><th>Währung</th></tr></thead><tbody>';
-        log.slice().reverse().forEach(entry => {
-            const dateStr = new Date(entry.time).toLocaleString();
-            html += `<tr>
-            <td>${dateStr}</td>
-            <td>${entry.buildingName}</td>
-            <td>${entry.vehicleName}</td>
-            <td>${entry.price.toLocaleString()}</td>
-            <td>${entry.currency}</td>
-        </tr>`;
-        });
-        html += '</tbody></table>';
-        content.innerHTML = html;
-    }
-
-    // Aktuelle Credits/Coins holen und aktualisieren
-    async function updateUserResources(){
-        try {
-            const res = await fetch('/api/userinfo');
-            const data = await res.json();
-            currentCredits = data.credits_user_current || 0;
-            currentCoins = data.coins_user_current || 0;
-
-            document.getElementById('fm-credits').textContent = currentCredits.toLocaleString();
-            document.getElementById('fm-coins').textContent = currentCoins.toLocaleString();
-
-            // Buttons nachführen
-            updateBuyButtons();
-        } catch(e) {
-            console.warn(e);
-        }
-    }
-
+    }); // Sammelkauf
     // Tabellen nach Schließen des Config-Modals aktualisieren
     $(document).on('hidden.bs.modal', '#fahrzeugConfigModal', async function () {
         if (!document.getElementById('fahrzeugManagerModal')) return;
@@ -3482,13 +3363,8 @@
             console.warn('[FM] Fehler beim Neuladen nach Schließen des Konfig-Modals:', err);
             const content = document.getElementById('fahrzeug-manager-content');
             if (!content) return;
-
             const filteredBuildings = buildingDataGlobal.filter(b => getBuildingTypeName(b) !== null);
-
-            // Tabellen neu bauen
             content.innerHTML = buildBuildingsByType(filteredBuildings, vehicleMapGlobal, vehicleTypeMapGlobal, lssmBuildingDefsGlobal);
-
-            // Spoiler-Eventlistener erneut setzen
             document.querySelectorAll('.fm-spoiler-header').forEach(header => {
                 header.addEventListener('click', () => {
                     const targetId = header.dataset.target;
@@ -3540,15 +3416,12 @@
                 });
             }, 0);
         }
-
-        // UI final aktualisieren: Auswahl zurücksetzen und Kosten/Buttons anpassen
         try {
             document.querySelectorAll('.fm-select').forEach(cb => cb.checked = false);
             updateSelectedCosts();
             updateBuyButtons();
-        } catch (e) { /* ignore */ }
+        } catch (e) {}
     });
-
     $(document).on('shown.bs.modal', '#fahrzeugManagerModal', function () {
         document.querySelectorAll('.fm-select').forEach(cb => cb.checked = false);
         document.getElementById('fm-costs-credits').textContent = '0';
@@ -3557,5 +3430,9 @@
         updateUserResources();
         loadBuildingsFromAPI();
     });
+
+    window.fm_updateSelectedCosts = updateSelectedCosts;
+
+
 
 })();
