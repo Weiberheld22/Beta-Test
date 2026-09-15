@@ -13,7 +13,7 @@
 (function() {
     'use strict';
 
-    const coinsButton = true;
+    const coinsButton = false;
     // Jede menge Daten (mehr wie Google!)
     const buildingTypeNames = {
         '0_normal': 'Feuerwache (Normal)',
