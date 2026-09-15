@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         [LSS] Fahrzeug-Manager
+// @name         [LSS] Fahrzeug-Manager (Beta RC)
 // @namespace    https://leitstellenspiel.de/
 // @version      1.1
 // @description  Zeigt fehlden Fahrzeuge pro Wache, je Einstellung an und ermöglicht den Kauf dieser.
@@ -1503,8 +1503,8 @@
           <th>Profil</th>
           <th>Fahrzeuge</th>
           <th>Freie Stellplätze</th>
-          <th>Fahrzeuge / RCs auf Wache</th>
-          <th>Fehlende Fahrzeuge / RCs</th>
+          <th>Fahrzeuge / Ausrüstung auf Wache</th>
+          <th>Fehlende Fahrzeuge / Ausrüstung</th>
           <th>Kaufen mit Credits</th>
           <th>Kaufen mit Coins</th>
         </tr>
