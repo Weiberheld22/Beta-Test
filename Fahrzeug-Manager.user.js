@@ -241,9 +241,9 @@
             ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/firefighter_yoshi.png', 'Feuerwehr'],
             ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/paramedic_yoshi.png', 'Rettungsdienst'],
             ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/police_yoshi.png', 'Polizei'],
-            ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/vip_yoshi.png', 'VIP'],
             ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/riot_police_Yoshi.png', 'Bereitschaftspolizei'],
-            ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/thw_yoshi.png', 'THW']
+            ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/thw_yoshi.png', 'THW'],
+            ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/vip_yoshi.png', 'VIP']
         ];
 
         const updateLoading = (vehicles = 0, buildings = 0, totalVehicles = 0, totalBuildings = 0, completedPages = 0) => {
@@ -1587,7 +1587,6 @@
                 };
             });
 
-
             const vehicleNames = Object.values(typeCountMapOnBuilding)
             .map(item => {
                 const displayName =
@@ -1636,7 +1635,16 @@
                 const key = String(id);
                 missingGrouped[key] = (missingGrouped[key] || 0) + 1;
             });
+            const buyableGrouped = {};
+            (buyableData.vehiclesIds || []).forEach(id => {
+                const key = String(id);
+                buyableGrouped[key] = (buyableGrouped[key] || 0) + 1;
+            });
+
             const coloredMissingNames = Object.entries(missingGrouped).map(([id, count]) => {
+                const buyableCount = buyableGrouped[id] || 0;
+                const purchaseLimited = buyableCount < count;
+
                 if (id.startsWith('equipment:')) {
                     const equipmentId = id.substring('equipment:'.length);
                     const equipment = getEquipmentById(equipmentId);
@@ -1660,6 +1668,12 @@
                     )
                     : null;
 
+                    // Lager vorhanden, aber nicht genug Platz für alle konfigurierten RCs
+                    if (purchaseLimited && storageTotal > 0) {
+                        return `<span style="color:#00a6a6;font-weight:bold;"
+                        title="Nicht alle konfigurierten RCs können gekauft werden – Lagerkapazität reicht nicht aus">${displayName}</span>`;
+                    }
+
                     if (storageTotal > 0) {
                         return displayName;
                     }
@@ -1670,11 +1684,11 @@
                         storageUpgrade.available_at
                     ) {
                         return `<span style="color:orange;font-weight:bold;"
-                                    title="Lager im Bau">${displayName}</span>`;
+                        title="Lager im Bau">${displayName}</span>`;
                     }
 
                     return `<span style="color:red;font-weight:bold;"
-                                title="Lager fehlt">${displayName}</span>`;
+                    title="Lager fehlt">${displayName}</span>`;
                 }
 
                 const typeId = parseInt(id, 10);
@@ -1694,17 +1708,30 @@
                 ? `${count}x ${name}`
                 : name;
 
+                // Erweiterungsstatus hat IMMER Vorrang
                 switch (status) {
                     case 'locked':
                     case 'missing':
                         return `<span style="color:red;font-weight:bold;"
-                                    title="Erweiterung fehlt">${displayName}</span>`;
+                    title="Erweiterung fehlt">${displayName}</span>`;
 
                     case 'in_progress':
                         return `<span style="color:orange;font-weight:bold;"
-                                    title="Erweiterung im Bau">${displayName}</span>`;
+                    title="Erweiterung im Bau">${displayName}</span>`;
 
                     default:
+                        // Erweiterung ist vorhanden/fertig.
+                        // Erst jetzt prüfen, ob alle Fahrzeuge gekauft werden können.
+                        if (purchaseLimited) {
+                            if (isBesonderheit(typeId)) {
+                                return `<span style="color:#00a6a6;font-weight:bold;"
+                            title="Nicht alle konfigurierten Außenlastbehälter können gekauft werden – nicht genügend freie Plätze für Hubschrauber">${displayName}</span>`;
+                            }
+
+                            return `<span style="color:#00a6a6;font-weight:bold;"
+                        title="Nicht alle konfigurierten Fahrzeuge können gekauft werden – nicht genügend freie Stellplätze">${displayName}</span>`;
+                        }
+
                         return displayName;
                 }
             }).join(',<wbr>&nbsp;') || missingData.names;
@@ -1712,7 +1739,15 @@
             const missingVehiclesJson = JSON.stringify(missingVehicles);
             const hasMissing = missingVehicles.length > 0;
             const maxVehicles = calcMaxParkingLots(b, lssmBuildingDefs);
-            const freieStellplaetze = Math.max(maxVehicles - vehiclesOnBuilding.length,0);
+
+            const normalVehiclesOnBuilding = vehiclesOnBuilding.filter(
+                v => !isBesonderheit(v.vehicle_type)
+            );
+
+            const freieStellplaetze = Math.max(
+                maxVehicles - normalVehiclesOnBuilding.length,
+                0
+            );
             const profileCell = hasProfiles
             ? `<select class="fm-building-profile"
                        data-building-id="${b.id}"
@@ -2050,16 +2085,44 @@
         applyRowFilter();
     }
 
-    // Gibt die tatsächlich kaufbaren Fahrzeuge und RCs zurück
+    // Funktion für Besonderheiten
+    function isBesonderheit(vehicleTypeId) {
+        return Number(vehicleTypeId) === 96;
+    }
+
+    // Gibt die Kaufbaren Fahrzeuge zurück
     function getBuyableMissingVehicles(building, missingData, vehicleTypeMap, lssmBuildingDefs) {
         let totalCredits = 0;
         let totalCoins = 0;
         const missingVehicleIds = missingData?.vehiclesIds || [];
+        const buyableVehicleIds = [];
+
         const storage = getBuildingStorageInfo(building);
         let remainingStorage = storage.free;
 
+        const maxVehicles = calcMaxParkingLots(building, lssmBuildingDefs);
+        const vehiclesOnBuilding = vehicleMapGlobal[building.id] || [];
+        const normalVehiclesOnBuilding = vehiclesOnBuilding.filter(
+            v => !isBesonderheit(v.vehicle_type)
+        );
+
+        let remainingParking = Math.max(
+            maxVehicles - normalVehiclesOnBuilding.length,
+            0
+        );
+        const existingAussenlastbehaelter = vehiclesOnBuilding.filter(
+            v => isBesonderheit(v.vehicle_type)
+        ).length;
+
+        let remainingAussenlastbehaelter = Math.max(
+            maxVehicles - existingAussenlastbehaelter,
+            0
+        );
+
         missingVehicleIds.forEach(item => {
             const itemString = String(item);
+
+            // Rollcontainer
             if (itemString.startsWith('equipment:')) {
                 const equipmentTypeId = itemString.substring('equipment:'.length);
                 const equipment = getEquipmentById(equipmentTypeId);
@@ -2068,39 +2131,73 @@
 
                 const size = Number(equipment.size || 0);
 
-                // Ohne verfügbares Lager können keine RCs gekauft werden
+                // Kein Lager / kein freier Lagerplatz
                 if (!storage.hasStorage || !storage.available || size <= 0) {
                     return;
                 }
 
-                // RC passt nicht mehr ins Lager
                 if (remainingStorage < size) {
                     return;
                 }
 
                 totalCredits += Number(equipment.credits || 0);
                 totalCoins += Number(equipment.coins || 0);
+
                 remainingStorage -= size;
+                buyableVehicleIds.push(item);
 
                 return;
             }
+
+            // Fahrzeug
             const typeId = parseInt(itemString, 10);
+
             if (Number.isNaN(typeId)) return;
             const status = getExtensionStatusForVehicle(
                 building,
                 typeId,
                 lssmBuildingDefs
             );
-            if (status !== 'ok' && status !== null) return;
+
+            if (status !== 'ok' && status !== null) {
+                return;
+            }
+
             const vt = vehicleTypeMap[typeId];
+
             if (!vt) return;
+
+            // Außenlastbehälter
+            if (isBesonderheit(typeId)) {
+                if (remainingAussenlastbehaelter <= 0) {
+                    return;
+                }
+
+                totalCredits += Number(vt.credits || 0);
+                totalCoins += Number(vt.coins || 0);
+
+                buyableVehicleIds.push(item);
+                remainingAussenlastbehaelter--;
+
+                return;
+            }
+
+            // Normales Fahrzeug
+            if (remainingParking <= 0) {
+                return;
+            }
+
             totalCredits += Number(vt.credits || 0);
             totalCoins += Number(vt.coins || 0);
+
+            buyableVehicleIds.push(item);
+            remainingParking--;
         });
+
         return {
             totalCredits,
             totalCoins,
-            vehiclesIds: missingVehicleIds
+            vehiclesIds: buyableVehicleIds
         };
     }
 
