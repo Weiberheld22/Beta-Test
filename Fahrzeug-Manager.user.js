@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         [LSS] Fahrzeug-Manager (Beta RC und Spielereien)
+// @name         [LSS] Fahrzeug-Manager
 // @namespace    https://leitstellenspiel.de/
 // @version      1.2
-// @description  Zeigt fehlende Fahrzeuge und Ausrüstungen pro Wache entsprechend der Konfiguration an und ermöglicht deren Kauf.
+// @description  Zeigt fehlden Fahrzeuge pro Wache, je Einstellung an und ermöglicht den Kauf dieser.
 // @author       Caddy21
 // @match        https://www.leitstellenspiel.de/*
 // @match        https://polizei.leitstellenspiel.de/*
@@ -241,7 +241,7 @@
             ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/firefighter_yoshi.png', 'Feuerwehr'],
             ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/paramedic_yoshi.png', 'Rettungsdienst'],
             ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/police_yoshi.png', 'Polizei'],
-            ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/blob/main/vip_yoshi.png', 'VIP'],
+            ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/vip_yoshi.png', 'VIP'],
             ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/riot_police_Yoshi.png', 'Bereitschaftspolizei'],
             ['https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/thw_yoshi.png', 'THW']
         ];
