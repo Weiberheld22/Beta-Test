@@ -1,5 +1,5 @@
 // ==UserScript==
-// @name         [LSS] Fahrzeug-Manager
+// @name         [LSS] 29 - Fahrzeug-Manager
 // @namespace    https://leitstellenspiel.de/
 // @version      1.2
 // @description  Zeigt fehlden Fahrzeuge pro Wache, je Einstellung an und ermöglicht den Kauf dieser.
@@ -12,6 +12,8 @@
 
 (function() {
     'use strict';
+
+    // NEA50, Anh Lüfter, FKH, MZB, Anh Schlauch, Anh Sonderlöschmittel und Anh Tierrettung belegen Anh-Stellplätze
 
     const coinsButton = false;
     // Jede menge Daten (mehr wie Google!)
@@ -39,6 +41,7 @@
         rescue_lift: [5],
         mountain_drone: [25]
     };
+    const hiddenBuildings = 'fm-hidden-buildings';
     const menu = document.querySelector('#menu_profile + ul.dropdown-menu'); if (menu) {
         const divider = menu.querySelector('li.divider');
         if (divider) {
@@ -265,8 +268,8 @@
                 🚒 Fahrzeuge: <strong>${vehicles.toLocaleString()} von ${totalVehicles.toLocaleString()}</strong>
             </div>
 
-            <div style="margin-top:12px;font-weight:bold;">
-                Bei großen Accounts kann der Datenabruf etwas dauern.
+            <div style="margin-top:12px;;">
+                Bei <b>großen Accounts</b> kann der Datenabruf etwas dauern. Sollte es zu einem Datenabruffehler kommen, einfach das Script schließen und erneut öffnet.
             </div>
 
             <div style="display:flex;justify-content:center;align-items:flex-start;gap:25px;margin-top:20px;flex-wrap:wrap;">
@@ -437,26 +440,69 @@
     // Stellplatzberechnung für alle Gebäudetypen
     function calcMaxParkingLots(building, lssmBuildings) {
         const bTypeId = String(building.building_type);
+        const level = Number(building.level ?? 1);
         const lssmDef = lssmBuildings?.[bTypeId];
-        if (!lssmDef) return (building.level ?? 0) + 1;
-        let max = lssmDef.startParkingLots || 0;
+        if (!lssmDef) return level + 1;
+
+        // Hubschrauber-Stationen: jede Ausbaustufe = 1 zusätzlicher Stellplatz
+        if ([5, 13, 28].includes(Number(building.building_type))) {
+            return level + 1;
+        }
+
+        let max = Number(lssmDef.startParkingLots || 0);
+
         if (Array.isArray(building.extensions)) {
             for (const ext of building.extensions) {
                 const lssmExt = lssmDef.extensions?.find(e =>
-                                                         (typeof ext.type_id !== "undefined" && typeof e.type_id !== "undefined" && e.type_id === ext.type_id) ||
+                                                         (typeof ext.type_id !== 'undefined' && typeof e.type_id !== 'undefined' && e.type_id === ext.type_id) ||
                                                          (e.caption && ext.caption && e.caption === ext.caption)
                                                         );
-                if (lssmExt && lssmExt.givesParkingLots) {
-                    if (ext.available === true) {
-                        max += lssmExt.givesParkingLots;
-                    }
+                if (lssmExt && Number(lssmExt.givesParkingLots) > 0 && ext.available === true) {
+                    max += Number(lssmExt.givesParkingLots);
                 }
             }
         }
+
         if (lssmDef.maxLevel > 0) {
-            max += (building.level ?? 0);
+            max += level;
         }
+
         return max;
+    }
+
+    // Stellplatzberechnung für Abrollbehälter
+    function calcMaxABParkingLots(building, lssmBuildings) {
+        const bTypeId = String(building.building_type);
+        const lssmDef = lssmBuildings?.[bTypeId];
+        if (!lssmDef || !Array.isArray(building.extensions)) return 0;
+
+        return building.extensions.reduce((total, ext) => {
+            const lssmExt = lssmDef.extensions?.find(e =>
+                                                     (typeof ext.type_id !== 'undefined' && typeof e.type_id !== 'undefined' && e.type_id === ext.type_id) ||
+                                                     (e.caption && ext.caption && e.caption === ext.caption)
+                                                    );
+
+            if (
+                lssmExt &&
+                lssmExt.caption === 'Abrollbehälter-Stellplatz' &&
+                lssmExt.givesParkingLots &&
+                ext.available === true
+            ) {
+                return total + lssmExt.givesParkingLots;
+            }
+
+            return total;
+        }, 0);
+    }
+
+    // Stellplatzberechnung für Anhänger
+    function calcMaxAnhStellplaetze(building) {
+        if (!building || !Array.isArray(building.extensions)) return 0;
+        return building.extensions.filter(ext =>
+                                          Number(ext.type_id) === 20 &&
+                                          String(ext.caption || '').trim().toLowerCase() === 'anhänger-stellplatz' &&
+                                          ext.available === true
+                                         ).length;
     }
 
     // Fügt den Gebäudelink hinzu
@@ -945,6 +991,33 @@
         }
     }
 
+    // Alles um Wachen auszublenden
+    function getHiddenBuildings() {
+        try {
+            return JSON.parse(localStorage.getItem(hiddenBuildings) || '[]');
+        } catch {
+            return [];
+        }
+    }
+    function setHiddenBuildings(ids) {
+        localStorage.setItem(hiddenBuildings, JSON.stringify(ids));
+    }
+    function hideBuilding(buildingId) {
+        const hidden = getHiddenBuildings();
+
+        if (!hidden.includes(Number(buildingId))) {
+            hidden.push(Number(buildingId));
+            setHiddenBuildings(hidden);
+        }
+    }
+    function unhideBuilding(buildingId) {
+        const id = Number(buildingId);
+        setHiddenBuildings(getHiddenBuildings().filter(hiddenId => hiddenId !== id));
+    }
+    function isBuildingHidden(buildingId) {
+        return getHiddenBuildings().includes(Number(buildingId));
+    }
+
     // Funktion für das Konfigurationsmenü
     function buildConfigGrid(vehicles, tableId, itemsPerRow = 10, buildingCaption = '') {
         if (!vehicles || vehicles.length === 0) {
@@ -962,10 +1035,10 @@
         const savedConfig = getActiveProfileConfig(tableId) || [];
         const firstStart = !hasProfiles;
         const categories = {
-            fahrzeuge: { title: '🚒 Fahrzeuge', items: [] },
-            ab: { title: '🚛 Abrollbehälter', items: [] },
-            anhaenger: { title: '🛻 Anhänger / Außenlastbehälter / Winden', items: [] },
-            rc: { title: '📦 Rollcontainer', items: [] }
+            fahrzeuge: '🚒 Fahrzeuge',
+            ab: '🚛 Abrollbehälter',
+            anhaenger: '🛻 Anhänger / Außenlastbehälter / Winden',
+            rc: '📦 Rollcontainer'
         };
 
         let migratedProfileConfig = false;
@@ -1017,11 +1090,6 @@
             return 'fahrzeuge';
         }
 
-        vehicles.forEach(vehicle => {
-            const category = getConfigCategory(vehicle);
-            if (categories[category]) categories[category].items.push(vehicle);
-        });
-
         let html = `
         <div class="fm-config-header" style="margin-bottom:5px;display:flex;flex-wrap:wrap;gap:5px;align-items:center;">
             ${hasProfiles ? `
@@ -1050,23 +1118,24 @@
         }
 
         function buildCategorySpoiler(categoryKey) {
-            const category = categories[categoryKey];
-            if (!category || !category.items.length) return '';
+            const categoryItems = vehicles.filter(vehicle => getConfigCategory(vehicle) === categoryKey);
+            if (!categoryItems.length) return '';
 
+            const categoryTitle = categories[categoryKey];
             const spoilerId = `fm-config-category-${tableId}-${categoryKey}`;
             const isOpen = categoryKey === 'fahrzeuge';
 
             let categoryHtml = `
             <div class="fm-config-category-spoiler" style="border:1px solid var(--spoiler-border);border-radius:4px;margin-bottom:7px;overflow:hidden;">
                 <div class="fm-config-category-header" data-category="${categoryKey}" data-category-target="${spoilerId}" style="background-color:var(--spoiler-header-bg);color:var(--spoiler-header-text);padding:8px 12px;cursor:pointer;font-weight:bold;user-select:none;display:flex;justify-content:space-between;align-items:center;">
-                    <span>${category.title} <span style="font-size:11px;font-weight:normal;opacity:.7;margin-left:4px;">(${category.items.length})</span></span>
+                    <span>${categoryTitle}</span>
                     <span class="fm-config-category-arrow" style="font-size:12px;opacity:.7;">${isOpen ? '▼' : '▶'}</span>
                 </div>
                 <div id="${spoilerId}" class="fm-config-category-body" data-category="${categoryKey}" style="display:${isOpen ? 'block' : 'none'};padding:8px;background:var(--spoiler-body-bg);color:var(--spoiler-body-text);">
                     <div class="fm-config-grid" data-config-category="${categoryKey}" style="display:${hasProfiles ? 'grid' : 'none'};grid-template-columns:repeat(${itemsPerRow},minmax(120px,1fr));gap:4px 8px;width:100%;">
         `;
 
-            category.items.forEach(vehicle => {
+            categoryItems.forEach(vehicle => {
                 const itemType = vehicle.itemType || vehicle.type || 'vehicle';
 
                 const saved = savedConfig.find(c =>
@@ -1460,6 +1529,7 @@
     function buildFahrzeugTable(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs, filters = {}) {
         const filterLeitstelle = filters.leitstelle || '';
         const filterWache = filters.wache || '';
+        const hiddenBuildings = getHiddenBuildings();
         const leitstellen = [...new Set(
             buildings.map(b => b.leitstelle_caption).filter(Boolean)
         )].sort((a, b) => a.localeCompare(b, 'de'));
@@ -1475,7 +1545,6 @@
           <th>Leitstelle</th>
           <th>Wache</th>
           <th>Profil</th>
-          <th>Fahrzeuge</th>
           <th>Freie Stellplätze</th>
           <th>Fahrzeuge / Ausrüstung auf Wache</th>
           <th>Fehlende Fahrzeuge / Ausrüstung</th>
@@ -1507,8 +1576,7 @@
               Filter zurücksetzen
             </button>
           </td>
-
-          <td></td>
+          
           <td></td>
           <td></td>
 
@@ -1546,9 +1614,9 @@
         .sort((a, b) => a.caption.localeCompare(b.caption));
 
         sortedBuildings.forEach((b, idx) => {
+            if (hiddenBuildings.includes(Number(b.id))) return;
             if (filterLeitstelle && b.leitstelle_caption !== filterLeitstelle) return;
             if (filterWache && b.caption !== filterWache) return;
-
             const vehiclesOnBuilding = vehicleMap[b.id] || [];
             const typeCountMapOnBuilding = {};
             const configuredSurplusItems = getConfiguredSurplusItems(b, vehicleMap);
@@ -1572,7 +1640,6 @@
                 typeCountMapOnBuilding[key].count++;
             });
             const buildingEquipment = equipmentMapGlobal[b.id] || {};
-
             Object.entries(buildingEquipment).forEach(([equipmentId, count]) => {
                 const equipment = getEquipmentById(equipmentId);
                 if (!equipment || !count) return;
@@ -1586,9 +1653,7 @@
                     count: Number(count) || 0
                 };
             });
-
-            const vehicleNames = Object.values(typeCountMapOnBuilding)
-            .map(item => {
+            const vehicleNames = Object.values(typeCountMapOnBuilding).map(item => {
                 const displayName =
                       item.count > 1
                 ? `${item.count}x ${item.name}`
@@ -1619,9 +1684,7 @@
                 }
 
                 return displayName;
-            })
-            .join(',<wbr> ') || 'Keine Fahrzeuge / RCs auf Wache vorhanden';
-
+            }).join(',<wbr> ') || 'Keine Fahrzeuge / RCs auf Wache vorhanden';
             const configKey = `${b.building_type}_${b.small_building ? 'small' : 'normal'}`;
             const profilesData = loadProfiles(configKey);
             const profileNames = Object.keys(profilesData.profiles);
@@ -1640,7 +1703,6 @@
                 const key = String(id);
                 buyableGrouped[key] = (buyableGrouped[key] || 0) + 1;
             });
-
             const coloredMissingNames = Object.entries(missingGrouped).map(([id, count]) => {
                 const buyableCount = buyableGrouped[id] || 0;
                 const purchaseLimited = buyableCount < count;
@@ -1735,19 +1797,26 @@
                         return displayName;
                 }
             }).join(',<wbr>&nbsp;') || missingData.names;
-            const missingVehicles = missingData.vehiclesIds || [];
+            const missingVehicles = buyableData.vehiclesIds || [];
             const missingVehiclesJson = JSON.stringify(missingVehicles);
             const hasMissing = missingVehicles.length > 0;
             const maxVehicles = calcMaxParkingLots(b, lssmBuildingDefs);
-
-            const normalVehiclesOnBuilding = vehiclesOnBuilding.filter(
-                v => !isBesonderheit(v.vehicle_type)
-            );
-
-            const freieStellplaetze = Math.max(
-                maxVehicles - normalVehiclesOnBuilding.length,
-                0
-            );
+            const abOnBuilding = vehiclesOnBuilding.filter(v => {
+                const type = vehicleTypeMap[v.vehicle_type];
+                return type?.isTrailer === true &&
+                    Array.isArray(type.tractiveVehicles) &&
+                    type.tractiveVehicles.includes(46);
+            });
+            const normalVehiclesOnBuilding = vehiclesOnBuilding.filter(v => !isBesonderheit(v.vehicle_type));
+            const maxABStellplaetze = calcMaxABParkingLots(b,lssmBuildingDefs);
+            const freieStellplaetze = Math.max(maxVehicles - normalVehiclesOnBuilding.length,0);
+            const freieABStellplaetze = Math.max(maxABStellplaetze - abOnBuilding.length,0);
+            const anhaengerOnBuilding = vehiclesOnBuilding.filter(v => {
+                const type = vehicleTypeMap[v.vehicle_type];
+                return type?.isTrailer === true && !(Array.isArray(type.tractiveVehicles) && type.tractiveVehicles.includes(46));
+            });
+            const maxAnhStellplaetze = calcMaxAnhStellplaetze(b);
+            const freieAnhStellplaetze = Math.max(maxAnhStellplaetze - anhaengerOnBuilding.length, 0);
             const profileCell = hasProfiles
             ? `<select class="fm-building-profile"
                        data-building-id="${b.id}"
@@ -1770,29 +1839,48 @@
                </span>`;
 
             html += `
-      <tr data-building-id="${b.id}"
-          data-config-key="${configKey}"
-          data-missing-vehicle-ids='${missingVehiclesJson}'
-          data-has-missing="${hasMissing}"
-          data-storage-free="${storageFree}">
+                    <tr data-building-id="${b.id}"
+                        data-building-caption="${b.caption}"
+                        data-leitstelle-caption="${b.leitstelle_caption ?? ''}"
+                        data-config-key="${configKey}"
+                        data-missing-vehicle-ids='${missingVehiclesJson}'
+                        data-has-missing="${hasMissing}"
+                        data-storage-free="${storageFree}">
 
-        <td>
-          <input type="checkbox"
-                 class="fm-select"
-                 id="fm-select-${tableId}-${idx}"
-                 data-credits="${buyableData.totalCredits}"
-                 data-coins="${buyableData.totalCoins}">
-        </td>
-        <td>${b.leitstelle_caption ?? '-'}</td>
-        <td>${buildBuildingLink(b)}</td>
+            <td>
+              <input type="checkbox"
+                     class="fm-select"
+                     id="fm-select-${tableId}-${idx}"
+                     data-credits="${buyableData.totalCredits}"
+                     data-coins="${buyableData.totalCoins}">
+            </td>
+            <td data-leitstelle-caption="${b.leitstelle_caption ?? ''}">
+    ${b.leitstelle_caption ?? '-'}
+<td>
+    ${buildBuildingLink(b)}
+    <button class="btn btn-danger btn-xs fm-hide-building"
+            data-building-id="${b.id}"
+            title="Wache dauerhaft ausblenden"
+            style="margin-left:4px;">
+        👁
+    </button>
+</td>
         <td>${profileCell}</td>
-        <td>${b.vehicle_count ?? 0}</td>
         <td>
-          <span class="badge fm-badge-green">
-            ${freieStellplaetze}
-          </span>
-        </td>
-
+  <span class="badge fm-badge-green" title="Freie Fahrzeug-Stellplätze">
+    FZ ${freieStellplaetze}
+  </span>
+  ${maxABStellplaetze > 0 ? `
+    <span class="badge fm-badge-green" title="Freie AB-Stellplätze">
+      AB ${freieABStellplaetze}
+    </span>
+  ` : ''}
+  ${Number(b.storage_total || 0) > 0 ? `
+    <span class="badge fm-badge-green" title="Freie RC-Lagerplätze">
+      RC ${storageFree}
+    </span>
+  ` : ''}
+</td>
         <td>
           <span class="fm-vehicle-list">
             ${vehicleNames}
@@ -1853,11 +1941,218 @@
         return html;
     }
 
+    // Modal für ausgeblendete Wachen
+    function showHiddenBuildingsModal(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
+        document.getElementById('fm-hidden-buildings-modal')?.remove();
+
+        const hiddenIds = getHiddenBuildings();
+        const hiddenBuildings = buildings.filter(b =>
+                                                 hiddenIds.includes(Number(b.id))
+                                                ).sort((a, b) => a.caption.localeCompare(b.caption, 'de'));
+
+        const modal = document.createElement('div');
+        modal.id = 'fm-hidden-buildings-modal';
+        modal.style.cssText = `
+        position:fixed;
+        inset:0;
+        z-index:10000;
+        background:rgba(0,0,0,.5);
+        display:flex;
+        align-items:center;
+        justify-content:center;
+    `;
+
+        modal.innerHTML = `
+        <div style="
+            width:420px;
+            max-width:90%;
+            max-height:80vh;
+            background:var(--spoiler-body-bg,#fff);
+            color:var(--spoiler-body-text,#333);
+            border:1px solid var(--spoiler-border,#ccc);
+            border-radius:6px;
+            box-shadow:0 5px 20px rgba(0,0,0,.4);
+            overflow:hidden;
+        ">
+            <div style="
+                display:flex;
+                justify-content:space-between;
+                align-items:center;
+                padding:10px 12px;
+                border-bottom:1px solid var(--spoiler-border,#ccc);
+                font-weight:bold;
+            ">
+                <span>👁 Ausgeblendete Wachen</span>
+                <button type="button"
+                        class="btn btn-default btn-xs fm-hidden-buildings-close">
+                    ×
+                </button>
+            </div>
+
+            <div style="
+                padding:10px 12px;
+                max-height:50vh;
+                overflow-y:auto;
+            ">
+                ${
+        hiddenBuildings.length
+            ? hiddenBuildings.map(b => `
+                        <div style="
+                            display:flex;
+                            justify-content:space-between;
+                            align-items:center;
+                            gap:10px;
+                            padding:6px 0;
+                            border-bottom:1px solid var(--spoiler-border,#eee);
+                        ">
+                            <span>${b.caption}</span>
+                            <button type="button"
+                                    class="btn btn-primary btn-xs fm-unhide-building"
+                                    data-building-id="${b.id}"
+                                    data-table="${tableId}">
+                                Anzeigen
+                            </button>
+                        </div>
+                    `).join('')
+        : `
+                        <div style="
+                            text-align:center;
+                            padding:15px 5px;
+                            color:var(--text-color-secondary,#999);
+                            font-style:italic;
+                        ">
+                            Keine Wachen ausgeblendet.
+                        </div>
+                    `
+    }
+            </div>
+
+            <div style="
+                display:flex;
+                justify-content:space-between;
+                padding:10px 12px;
+                border-top:1px solid var(--spoiler-border,#ccc);
+            ">
+                <button type="button"
+                        class="btn btn-danger btn-xs fm-unhide-all-buildings"
+                        ${hiddenBuildings.length ? '' : 'disabled'}>
+                    Alle wieder anzeigen
+                </button>
+
+                <button type="button"
+                        class="btn btn-default btn-xs fm-hidden-buildings-close">
+                    Schließen
+                </button>
+            </div>
+        </div>
+    `;
+
+        document.body.appendChild(modal);
+
+        modal.querySelectorAll('.fm-hidden-buildings-close').forEach(button => {
+            button.addEventListener('click', () => modal.remove());
+        });
+        modal.addEventListener('click', event => {
+            if (event.target === modal) {
+                modal.remove();
+            }
+        });
+        modal.querySelectorAll('.fm-unhide-building').forEach(button => {
+            button.addEventListener('click', () => {
+                unhideBuilding(button.dataset.buildingId);
+
+                modal.remove();
+
+                rebuildFahrzeugTableWithCurrentFilters(
+                    buildings,
+                    tableId,
+                    vehicleMap,
+                    vehicleTypeMap,
+                    lssmBuildingDefs
+                );
+            });
+        });
+        modal.querySelector('.fm-unhide-all-buildings')?.addEventListener('click', () => {
+            setHiddenBuildings([]);
+            modal.remove();
+
+            buildFahrzeugTable(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs);
+        });
+    }
+
+    // Tabellen neu erstellen nach einbelenen von Wachen
+    function rebuildFahrzeugTableWithCurrentFilters(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
+        const oldTable = document.getElementById(`fm-table-${tableId}`);
+        if (!oldTable) return;
+
+        const filterLeitstelle =
+              oldTable.querySelector('.fm-filter-leitstelle')?.value || '';
+
+        const filterWache =
+              oldTable.querySelector('.fm-filter-wache')?.value || '';
+
+        const container = oldTable.parentElement;
+
+        container.style.visibility = 'hidden';
+
+        // Tabelle zunächst komplett ohne Filter aufbauen
+        container.innerHTML = buildFahrzeugTable(
+            buildings,
+            tableId,
+            vehicleMap,
+            vehicleTypeMap,
+            lssmBuildingDefs,
+            {
+                leitstelle: '',
+                wache: ''
+            }
+        );
+
+        // setupTableEventListeners() wird in buildFahrzeugTable()
+        // bereits per setTimeout eingerichtet.
+        setTimeout(() => {
+            const newTable =
+                  document.getElementById(`fm-table-${tableId}`);
+
+            if (!newTable) {
+                container.style.visibility = 'visible';
+                return;
+            }
+
+            const leitstelleSelect =
+                  newTable.querySelector('.fm-filter-leitstelle');
+
+            const wacheSelect =
+                  newTable.querySelector('.fm-filter-wache');
+
+            if (leitstelleSelect) {
+                leitstelleSelect.value = filterLeitstelle;
+            }
+
+            if (wacheSelect) {
+                wacheSelect.value = filterWache;
+            }
+
+            // Die Filter nach dem Setzen der Selects anwenden
+            const leitstelleEvent =
+                  new Event('change', { bubbles: true });
+
+            if (leitstelleSelect) {
+                leitstelleSelect.dispatchEvent(leitstelleEvent);
+            } else if (wacheSelect) {
+                wacheSelect.dispatchEvent(
+                    new Event('change', { bubbles: true })
+                );
+            }
+
+            container.style.visibility = 'visible';
+        }, 0);
+    }
+
     // Bereitet die Listner vor
     function setupTableEventListeners(tableId, buildings, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
         const table = document.getElementById(`fm-table-${tableId}`);
         if (!table) return;
-
         const storageKey = `fm-hide-no-missing-${tableId}`;
         let hideNoMissing = localStorage.getItem(storageKey) === 'true';
 
@@ -1866,46 +2161,17 @@
                 const buildingId = e.target.dataset.buildingId;
                 const configKey = e.target.dataset.configKey;
                 const selectedProfile = e.target.value;
-
-                setBuildingActiveProfile(
-                    buildingId,
-                    configKey,
-                    selectedProfile
-                );
-
-                const selectedBuildings = new Set(
-                    Array.from(
-                        table.querySelectorAll('.fm-select:checked')
-                    ).map(cb => cb.closest('tr')?.dataset.buildingId)
-                );
-
-                const masterChecked =
-                      table.querySelector('.fm-select-all')?.checked || false;
-
-                const container = table.parentElement;
-                container.style.visibility = 'hidden';
-
-                const filterLeitstelle =
-                      table.querySelector('.fm-filter-leitstelle')?.value || '';
-
-                const filterWache =
-                      table.querySelector('.fm-filter-wache')?.value || '';
-
-                container.innerHTML = buildFahrzeugTable(
-                    buildings,
-                    tableId,
-                    vehicleMap,
-                    vehicleTypeMap,
-                    lssmBuildingDefs,
-                    {
-                        leitstelle: filterLeitstelle,
-                        wache: filterWache
-                    }
-                );
-
-                const newTable =
-                      document.getElementById(`fm-table-${tableId}`);
-
+                setBuildingActiveProfile(buildingId, configKey, selectedProfile);
+                const selectedBuildings = new Set(Array.from(table.querySelectorAll('.fm-select:checked')).map(cb => cb.closest('tr')?.dataset.buildingId));
+                const masterChecked = table.querySelector('.fm-select-all')?.checked || false;
+                const container = table.parentElement; container.style.visibility = 'hidden';
+                const filterLeitstelle = table.querySelector('.fm-filter-leitstelle')?.value || '';
+                const filterWache = table.querySelector('.fm-filter-wache')?.value || '';
+                container.innerHTML = buildFahrzeugTable(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs, {
+                    leitstelle: '',
+                    wache: ''
+                });
+                const newTable = document.getElementById(`fm-table-${tableId}`);
                 if (newTable) {
                     const leitstelleSelect =
                           newTable.querySelector('.fm-filter-leitstelle');
@@ -1939,15 +2205,11 @@
 
                     updateBuyButtons(newTable);
                 }
-
                 container.style.visibility = 'visible';
             });
         });
 
-        const toggleBtn = table.querySelector(
-            `.fm-toggle-hide-no-missing[data-table="${tableId}"]`
-        );
-
+        const toggleBtn = table.querySelector(`.fm-toggle-hide-no-missing[data-table="${tableId}"]`);
         if (toggleBtn) {
             toggleBtn.classList.toggle('active', hideNoMissing);
 
@@ -1984,10 +2246,10 @@
 
             table.querySelectorAll('tbody tr').forEach(row => {
                 const rowLeitstelle =
-                      row.children[1]?.textContent.trim();
+                      row.dataset.leitstelleCaption || '';
 
                 const rowWache =
-                      row.children[2]?.textContent.trim();
+                      row.dataset.buildingCaption || '';
 
                 const hasMissing =
                       row.dataset.hasMissing === 'true';
@@ -2019,13 +2281,14 @@
                     visible = false;
                 }
 
-                row.style.display =
-                    visible ? '' : 'none';
+                row.style.display = visible ? '' : 'none';
 
                 if (!visible) {
                     const cb = row.querySelector('.fm-select');
 
-                    if (cb) cb.checked = false;
+                    if (cb) {
+                        cb.checked = false;
+                    }
                 }
             });
 
@@ -2040,9 +2303,7 @@
                 updateBuyButtons(table);
             }
         });
-
-        table.querySelector('.fm-select-all')
-            ?.addEventListener('change', e => {
+        table.querySelector('.fm-select-all')?.addEventListener('change', e => {
             const checked = e.target.checked;
 
             const visibleCheckboxes =
@@ -2058,15 +2319,9 @@
 
             updateBuyButtons(table);
         });
-
-        table.querySelector('.fm-filter-leitstelle')
-            ?.addEventListener('change', applyRowFilter);
-
-        table.querySelector('.fm-filter-wache')
-            ?.addEventListener('change', applyRowFilter);
-
-        table.querySelector('.fm-filter-reset')
-            ?.addEventListener('click', () => {
+        table.querySelector('.fm-filter-leitstelle')?.addEventListener('change', applyRowFilter);
+        table.querySelector('.fm-filter-wache')?.addEventListener('change', applyRowFilter);
+        table.querySelector('.fm-filter-reset')?.addEventListener('click', () => {
             const container = table.parentElement;
 
             container.innerHTML = buildFahrzeugTable(
@@ -2081,7 +2336,35 @@
                 }
             );
         });
+        table.querySelectorAll('.fm-hide-building').forEach(button => {
+            button.addEventListener('click', () => {
+                const buildingId = Number(button.dataset.buildingId);
+                const row = button.closest('tr');
 
+                hideBuilding(buildingId);
+
+                if (row) {
+                    const checkbox = row.querySelector('.fm-select');
+
+                    if (checkbox) {
+                        checkbox.checked = false;
+                    }
+
+                    row.remove();
+                }
+
+                updateBuyButtons(table);
+            });
+        });
+        table.querySelector('.fm-show-hidden-buildings')?.addEventListener('click', () => {
+            showHiddenBuildingsModal(
+                buildings,
+                tableId,
+                vehicleMap,
+                vehicleTypeMap,
+                lssmBuildingDefs
+            );
+        });
         applyRowFilter();
     }
 
@@ -2110,6 +2393,15 @@
             maxVehicles - normalVehiclesOnBuilding.length,
             0
         );
+        console.log('[FM][THW DEBUG]', {
+            building: building.caption,
+            buildingType: building.building_type,
+            buildingLevel: building.level,
+            maxVehicles,
+            existingVehicles: normalVehiclesOnBuilding.length,
+            remainingParking,
+            missingVehicleIds
+        });
         const existingAussenlastbehaelter = vehiclesOnBuilding.filter(
             v => isBesonderheit(v.vehicle_type)
         ).length;
@@ -2631,7 +2923,16 @@
                                 max - current,
                                 0
                             );
-
+                            console.log('[FM][BUY THW DEBUG]', {
+                                buildingId,
+                                building: buildingObj.caption,
+                                buildingType: buildingObj.building_type,
+                                buildingLevel: buildingObj.level,
+                                maxVehicles: max,
+                                currentVehicles: current,
+                                freeSlots,
+                                wantedItems: requests
+                            });
                         } catch {
                             freeSlots = 0;
                         }
@@ -2649,13 +2950,6 @@
                             itemId,
                             wanted
                         } = request;
-
-                        /*
-                     * =================================================
-                     * RC / EQUIPMENT
-                     * =================================================
-                     */
-
                         if (itemType === 'equipment') {
                             wantedEquipment += wanted;
 
@@ -2676,10 +2970,6 @@
                                   Number(
                                       equipment.size || 0
                                   );
-
-                            /*
-                         * Ohne Lager können keine RCs gekauft werden.
-                         */
                             if (
                                 !storage.hasStorage ||
                                 size <= 0
@@ -2687,20 +2977,12 @@
                                 blockedByNoStorage += wanted;
                                 return;
                             }
-
-                            /*
-                         * Lager existiert, hat aber keinen freien Platz.
-                         */
                             if (
                                 remainingStorage <= 0
                             ) {
                                 blockedByStorage += wanted;
                                 return;
                             }
-
-                            /*
-                         * Wie viele Stück passen noch ins Lager?
-                         */
                             const maxBuyable =
                                   Math.min(
                                       wanted,
@@ -2713,10 +2995,6 @@
                                 blockedByStorage += wanted;
                                 return;
                             }
-
-                            /*
-                         * Kaufbare RCs hinzufügen.
-                         */
                             for (
                                 let i = 0;
                                 i < maxBuyable;
@@ -2731,16 +3009,8 @@
 
                             actualEquipmentToBuy +=
                                 maxBuyable;
-
-                            /*
-                         * Lagerplatz reduzieren.
-                         */
                             remainingStorage -=
                                 maxBuyable * size;
-
-                            /*
-                         * Nicht kaufbare Restmenge merken.
-                         */
                             if (
                                 maxBuyable < wanted
                             ) {
@@ -3311,7 +3581,7 @@
     <div style="padding:25px;text-align:center;">
         <div style="font-weight:bold;font-size:16px;">Tabellen werden aktualisiert …</div>
         <div>
-            Die geladenen Daten werden neu dargestellt.
+            Die eingestellten Konfigurationen werden geladen und neu erstellt.
         </div>
         <img src="https://raw.githubusercontent.com/Caddy21/-docs-assets-css/main/worker_yoshi.png"style="height:250px;width:auto;margin-top:15px;"><div>
             <br>Keine Sorge – Yoshi arbeitet fleißig und ist schneller fertig als der BER. 🦖🔨<br>
@@ -3377,7 +3647,7 @@
         } catch (err) {
             console.warn('[FM] Fehler beim Aktualisieren nach Schließen des Config-Modals:', err);
         }
-    });
+    }); // Fahrzeugkonfiguration schließen
     $(document).on('shown.bs.modal', '#fahrzeugManagerModal', function () {
         document.querySelectorAll('.fm-select').forEach(cb => cb.checked = false);
         document.getElementById('fm-costs-credits').textContent = '0';
@@ -3407,17 +3677,46 @@
                   </div>
                     <div class="fm-description"
                          style="font-size: 14px; color: #555; background-color: var(--spoiler-body-bg); padding: 5px 0; line-height: 1.5;">
-                      Nutze den <strong>Fahrzeug-Manager</strong>, um deine Fahrzeugflotte effizient zu verwalten.<br>
-                      Du kannst pro Wachentyp deine Fahrzeuge individuell konfigurieren – über den Button oben rechts.<br>
-                      Außerdem kannst du deine Wachen deutlich schneller mit Fahrzeugen bestücken und behältst dabei stets die Kosten im Blick.
+                         Nutze den <strong>Fahrzeug-Manager</strong>, um deine Fahrzeuge, Abrollbehälter, Anhänger und Rollcontainer zentral und übersichtlich zu verwalten.<br>
+                         Konfiguriere für jeden Wachentyp individuelle Soll-Bestände und hinterlege eigene Profile für unterschiedliche Wachenkonzepte.<br>
+                         Der Fahrzeug-Manager vergleicht den aktuellen Bestand mit deiner Konfiguration, zeigt dir fehlende Fahrzeuge, Abrollbehälter, Anhäger und Rollcontainer an und berücksichtigt dabei auch benötigte Erweiterungen und verfügbare Stellplätze.<br>
+                         Alles was noch nicht vorhanden ist kannst du anschließend direkt aus der Übersicht heraus kaufen – inklusive einer übersichtlichen Anzeige der anfallenden Credits- und Coin-Kosten.
                     </div>
-                  <div style="display: grid; grid-template-columns: max-content 1fr; gap: 15px; row-gap: 3px; align-items: center; font-size: 14px;">
-                      <div>Aktuelle Credits: <span id="fm-credits" style="color: #5cb85c; font-weight: bold;">0</span></div>
-                      <div>Ausgewählte Credits: <span id="fm-costs-credits" style="color: #5cb85c; font-weight: bold;">0</span></div>
-                      ${coinsButton ? `
-                      <div>Aktuelle Coins: <span id="fm-coins" style="color: #dc3545; font-weight: bold;">0</span></div>
-                      <div>Ausgewählte Coins: <span id="fm-costs-coins" style="color: #dc3545; font-weight: bold;">0</span></div>` : ''}
-                  </div>
+                    <br>
+                    <div style="display:flex;align-items:flex-start;gap:30px;font-size:14px;">
+                        <div style="display:grid;grid-template-columns:max-content 1fr;gap:15px;row-gap:3px;align-items:center;">
+                            <div>
+                                Aktuelle Credits:
+                                <span id="fm-credits" style="color:#5cb85c;font-weight:bold;">0</span>
+                            </div>
+
+                            <div>
+                                Ausgewählte Credits:
+                                <span id="fm-costs-credits" style="color:#5cb85c;font-weight:bold;">0</span>
+                            </div>
+
+                            ${coinsButton ? `
+                                <div>
+                                    Aktuelle Coins:
+                                    <span id="fm-coins" style="color:#dc3545;font-weight:bold;">0</span>
+                                </div>
+
+                                <div>
+                                    Ausgewählte Coins:
+                                    <span id="fm-costs-coins" style="color:#dc3545;font-weight:bold;">0</span>
+                                </div>
+                            ` : ''}
+                        </div>
+
+                        <div style="display:flex;align-items:center;gap:15px;min-height:100%;">
+                            <strong>Farblegende:</strong>
+                            <span> <span style="color:#00a8e8;font-weight:bold;">Blau</span> = mehr vorhanden als konfiguriert </span>
+                            <span><span style="color:#00a6a6;font-weight:bold;">Türkis</span> = nicht alles kaufbar</span>
+                            <span><span style="color:orange;font-weight:bold;">Orange</span> = Erweiterung / Lager im Bau</span>
+                            <span><span style="color:red;font-weight:bold;">Rot</span> = Erweiterung / Lager fehlt</span>
+                        </div>
+                    </div>
+
                   <div id="fm-progress-container" style="width: 100%; display: none; margin-top: 5px;">
                     <div id="fm-progress-text" style="font-size: 13px; margin-bottom: 3px; font-weight: bold; color: #007bff;">
                         Kauf gestartet...
@@ -3473,49 +3772,569 @@
     </div>`;
 
     // CSS
-    GM_addStyle(`
-        #fahrzeugManagerModal { z-index: 10000 !important; }
-        #fahrzeugManagerModal .modal-dialog { max-width: 2500px; width: 95%; margin: 30px auto; }
-        #fahrzeugManagerModal .modal-content { width: 100%; display: flex; flex-direction: column; height: 90vh; overflow-x: auto; }
-        #fahrzeugManagerModal .modal-header { flex-shrink: 0; position: sticky; top: 0; z-index: 10; background: var(--spoiler-body-bg); }
-        #fahrzeugManagerModal .modal-body { overflow-y: auto; flex-grow: 1; }
-        #fahrzeugConfigModal { z-index: 10001 !important; }
-        #fahrzeugConfigModal .modal-dialog { max-width: 2000px; width: 90%; margin: 30px auto; }
-        #fahrzeugConfigModal .modal-content { width: 100%; overflow-x: auto; }
-        #fahrzeugConfigModal + .modal-backdrop { z-index: 10000 !important; }
-        #fahrzeugLogModal { z-index: 10002 !important; }
-        #fahrzeugLogModal .modal-dialog { max-width: 1500px; width: 70%; margin: 30px auto; }
-        #fahrzeugLogModal .modal-content { width: 100%; overflow-x: auto; }
-        #fahrzeugLogModal + .modal-backdrop { z-index: 10001 !important; }
-        .modal-backdrop { z-index: 9999 !important; }
-        .fm-close-btn, .fm-config-btn, .fm-log-btn, .fm-export-btn, .fm-import-btn { color: white; border: none; border-radius: 4px; padding: 5px 10px; font-size: 13px; cursor: pointer; }
-        .fm-close-btn { background-color: #dc3545; }
-        .fm-close-btn:hover { background-color: #c82333; }
-        .fm-config-btn { background-color: #007bff; }
-        .fm-config-btn:hover { background-color: #0069d9; }
-        .fm-log-btn { background-color: #17a2b8; }
-        .fm-export-btn { background-color: #28a745; }
-        .fm-export-btn:hover { background-color: #218838; }
-        .fm-import-btn { background-color: #6f42c1; }
-        .fm-import-btn:hover { background-color: #5a32a3; }
-        .fm-reset-log-btn { background-color: #ffc107; color: #333; border: none; border-radius: 4px; padding: 5px 10px; font-size: 13px; cursor: pointer; margin-left: 10px; }
-        .fm-reset-log-btn:hover { background-color: #e0a800; }
-        .btn-xs { padding: 2px 6px; font-size: 12px; }
-        .fm-select { cursor: pointer; }
-        .fm-spoiler { border: 1px solid var(--spoiler-border); border-radius: 4px; margin-bottom: 8px; overflow: hidden; }
-        .fm-spoiler-header { background-color: var(--spoiler-header-bg); color: var(--spoiler-header-text); padding: 8px 12px; cursor: pointer; font-weight: bold; user-select: none; transition: background-color 0.2s; }
-        .fm-spoiler-header:hover { background-color: var(--spoiler-header-hover); }
-        .fm-spoiler-body { display: none; padding: 10px; background-color: var(--spoiler-body-bg); color: var(--spoiler-body-text); overflow-x: auto; }
-        .fm-spoiler-body.active { display: block; }
-        .fm-spoiler table { border-collapse: collapse; width: 100%; table-layout: auto; min-width: 800px; }
-        .fm-spoiler table th, .fm-spoiler table td, .fm-spoiler table .fm-filter-row td { border: none; padding: 6px 8px; text-align: center; vertical-align: middle; white-space: nowrap; }
-        .fm-spoiler table thead th, .fm-spoiler table .fm-filter-row td { background-color: var(--table-header-bg); font-weight: bold; }
-        .fm-filter-row select, .fm-filter-row button.fm-filter-reset { font-size: 12px; padding: 2px 4px; min-width: 100px; width: 100%; }
-        .fm-badge-green { background-color: #28a745 !important; color: #fff !important; }
-        .fm-vehicle-list { display: inline-block; max-width: 350px; white-space: normal !important; word-break: normal !important; overflow-wrap: normal !important; }
-        .fm-building-profile { background-color: var(--spoiler-input-bg); color: var(--spoiler-input-text); border-color: var(--spoiler-border); }
-        .fm-building-link, .fm-building-link:visited, .fm-building-link:hover, .fm-building-link:active { color: inherit !important; font-weight: normal !important; text-decoration: none !important; background: none !important; }
-        body:not(.dark) { --spoiler-border: #ddd; --spoiler-header-bg: #f7f7f7; --spoiler-header-text: #000; --spoiler-header-hover: #eaeaea; --spoiler-body-bg: #fff; --spoiler-body-text: #000; --table-header-bg: #f1f1f1; --spoiler-input-bg: #fff; --spoiler-input-text: #000; }
-        body.dark { --spoiler-border: #444; --spoiler-header-bg: #333; --spoiler-header-text: #eee; --spoiler-header-hover: #444; --spoiler-body-bg: #222; --spoiler-body-text: #ddd; --table-header-bg: #333; --spoiler-input-bg: #3a3a3a; --spoiler-input-text: #fff; }
+GM_addStyle(`
+    #fahrzeugManagerModal,
+    #fahrzeugConfigModal,
+    #fahrzeugLogModal {
+        --fm-border: #d9dee3;
+        --fm-header-bg: #f8f9fa;
+        --fm-header-text: #212529;
+        --fm-header-hover: #eef1f4;
+        --fm-body-bg: #fff;
+        --fm-body-text: #212529;
+        --fm-table-header: #f1f3f5;
+        --fm-table-hover: #f8f9fa;
+        --fm-input-bg: #fff;
+        --fm-input-text: #212529;
+        --fm-modal-bg: #fff;
+        --fm-modal-text: #212529;
+    }
+
+    body.dark #fahrzeugManagerModal,
+    body.dark #fahrzeugConfigModal,
+    body.dark #fahrzeugLogModal {
+        --fm-border: #454b52;
+        --fm-header-bg: #292d32;
+        --fm-header-text: #f1f3f5;
+        --fm-header-hover: #343a40;
+        --fm-body-bg: #1f2327;
+        --fm-body-text: #e2e6ea;
+        --fm-table-header: #292d32;
+        --fm-table-hover: #292d32;
+        --fm-input-bg: #30353a;
+        --fm-input-text: #f1f3f5;
+        --fm-modal-bg: #1f2327;
+        --fm-modal-text: #e2e6ea;
+    }
+
+    #fahrzeugManagerModal {
+        z-index: 10000 !important;
+    }
+
+    #fahrzeugConfigModal {
+        z-index: 10001 !important;
+    }
+
+    #fahrzeugLogModal {
+        z-index: 10002 !important;
+    }
+
+    #fahrzeugManagerModal .modal-dialog {
+        max-width: 2500px;
+        width: 95%;
+        margin: 30px auto;
+    }
+
+    #fahrzeugConfigModal .modal-dialog {
+        max-width: 2000px;
+        width: 90%;
+        margin: 30px auto;
+    }
+
+    #fahrzeugLogModal .modal-dialog {
+        max-width: 1500px;
+        width: 70%;
+        margin: 30px auto;
+    }
+
+    #fahrzeugManagerModal .modal-content,
+    #fahrzeugConfigModal .modal-content,
+    #fahrzeugLogModal .modal-content {
+        width: 100%;
+        background: var(--fm-modal-bg);
+        color: var(--fm-modal-text);
+        border: 1px solid var(--fm-border);
+        border-radius: 12px;
+        box-shadow: 0 12px 40px rgba(0,0,0,.25);
+        overflow: hidden;
+    }
+
+    #fahrzeugManagerModal .modal-content {
+        display: flex;
+        flex-direction: column;
+        height: 90vh;
+        overflow-x: auto;
+    }
+
+    #fahrzeugConfigModal .modal-content {
+        overflow-x: auto;
+    }
+
+    #fahrzeugLogModal .modal-content {
+        max-height: 85vh;
+        overflow: hidden;
+    }
+
+    #fahrzeugManagerModal .modal-header,
+    #fahrzeugConfigModal .modal-header,
+    #fahrzeugLogModal .modal-header {
+        background: var(--fm-body-bg);
+        color: var(--fm-body-text);
+        border-bottom: 1px solid var(--fm-border);
+    }
+
+    #fahrzeugManagerModal .modal-header {
+        flex-shrink: 0;
+        position: sticky;
+        top: 0;
+        z-index: 10;
+        padding: 14px 18px;
+    }
+
+    #fahrzeugConfigModal .modal-header,
+    #fahrzeugLogModal .modal-header {
+        padding: 14px 18px;
+    }
+
+    #fahrzeugManagerModal .modal-title,
+    #fahrzeugConfigModal .modal-title,
+    #fahrzeugLogModal .modal-title {
+        color: var(--fm-header-text);
+    }
+
+    #fahrzeugManagerModal .modal-body,
+    #fahrzeugConfigModal .modal-body,
+    #fahrzeugLogModal .modal-body {
+        background: var(--fm-body-bg);
+        color: var(--fm-body-text);
+    }
+
+    #fahrzeugManagerModal .modal-body {
+        overflow-y: auto;
+        flex-grow: 1;
+        padding: 16px;
+    }
+
+    #fahrzeugConfigModal .modal-body {
+        padding: 16px;
+    }
+
+    #fahrzeugLogModal .modal-body {
+        padding: 16px;
+        max-height: calc(85vh - 75px);
+        overflow-y: auto;
+        overflow-x: auto;
+    }
+
+    #fahrzeugManagerModal .fm-description {
+        color: var(--fm-body-text) !important;
+        background: var(--fm-body-bg) !important;
+    }
+
+    #fahrzeugManagerModal .fm-close-btn,
+    #fahrzeugManagerModal .fm-config-btn,
+    #fahrzeugManagerModal .fm-log-btn,
+    #fahrzeugManagerModal .fm-export-btn,
+    #fahrzeugManagerModal .fm-import-btn,
+    #fahrzeugConfigModal .fm-close-btn,
+    #fahrzeugConfigModal .fm-config-btn,
+    #fahrzeugConfigModal .fm-log-btn,
+    #fahrzeugConfigModal .fm-export-btn,
+    #fahrzeugConfigModal .fm-import-btn,
+    #fahrzeugLogModal .fm-close-btn,
+    #fahrzeugLogModal .fm-config-btn,
+    #fahrzeugLogModal .fm-log-btn,
+    #fahrzeugLogModal .fm-export-btn,
+    #fahrzeugLogModal .fm-import-btn,
+    #fahrzeugManagerModal .fm-reset-log-btn,
+    #fahrzeugConfigModal .fm-reset-log-btn,
+    #fahrzeugLogModal .fm-reset-log-btn {
+        border: none;
+        border-radius: 7px;
+        padding: 6px 12px;
+        font-size: 13px;
+        cursor: pointer;
+        font-weight: 600;
+        transition:
+            background-color .18s ease,
+            transform .12s ease,
+            box-shadow .18s ease,
+            opacity .18s ease;
+        box-shadow: 0 2px 5px rgba(0,0,0,.15);
+    }
+
+    #fahrzeugManagerModal .fm-close-btn,
+    #fahrzeugConfigModal .fm-close-btn,
+    #fahrzeugLogModal .fm-close-btn {
+        color: #fff;
+        background: #dc3545;
+    }
+
+    #fahrzeugManagerModal .fm-close-btn:hover,
+    #fahrzeugConfigModal .fm-close-btn:hover,
+    #fahrzeugLogModal .fm-close-btn:hover {
+        background: #c82333;
+    }
+
+    #fahrzeugManagerModal .fm-config-btn {
+        color: #fff;
+        background: #0d6efd;
+    }
+
+    #fahrzeugManagerModal .fm-config-btn:hover {
+        background: #0b5ed7;
+    }
+
+    #fahrzeugManagerModal .fm-log-btn {
+        color: #062b33;
+        background: #0dcaf0;
+    }
+
+    #fahrzeugManagerModal .fm-log-btn:hover {
+        background: #31d2f2;
+    }
+
+    #fahrzeugConfigModal .fm-export-btn {
+        color: #fff;
+        background: #198754;
+    }
+
+    #fahrzeugConfigModal .fm-export-btn:hover {
+        background: #157347;
+    }
+
+    #fahrzeugConfigModal .fm-import-btn {
+        color: #fff;
+        background: #6f42c1;
+    }
+
+    #fahrzeugConfigModal .fm-import-btn:hover {
+        background: #59359a;
+    }
+
+    #fahrzeugLogModal .fm-reset-log-btn {
+        color: #212529;
+        background: #ffc107;
+        margin-left: 10px;
+    }
+
+    #fahrzeugLogModal .fm-reset-log-btn:hover {
+        background: #ffca2c;
+    }
+
+    #fahrzeugManagerModal .fm-close-btn:hover,
+    #fahrzeugManagerModal .fm-config-btn:hover,
+    #fahrzeugManagerModal .fm-log-btn:hover,
+    #fahrzeugManagerModal .fm-export-btn:hover,
+    #fahrzeugManagerModal .fm-import-btn:hover,
+    #fahrzeugConfigModal .fm-close-btn:hover,
+    #fahrzeugConfigModal .fm-config-btn:hover,
+    #fahrzeugConfigModal .fm-log-btn:hover,
+    #fahrzeugConfigModal .fm-export-btn:hover,
+    #fahrzeugConfigModal .fm-import-btn:hover,
+    #fahrzeugLogModal .fm-close-btn:hover,
+    #fahrzeugLogModal .fm-config-btn:hover,
+    #fahrzeugLogModal .fm-log-btn:hover,
+    #fahrzeugLogModal .fm-export-btn:hover,
+    #fahrzeugLogModal .fm-import-btn:hover,
+    #fahrzeugLogModal .fm-reset-log-btn:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 9px rgba(0,0,0,.2);
+    }
+
+    #fahrzeugManagerModal .fm-close-btn:active,
+    #fahrzeugManagerModal .fm-config-btn:active,
+    #fahrzeugManagerModal .fm-log-btn:active,
+    #fahrzeugConfigModal .fm-close-btn:active,
+    #fahrzeugConfigModal .fm-export-btn:active,
+    #fahrzeugConfigModal .fm-import-btn:active,
+    #fahrzeugLogModal .fm-close-btn:active,
+    #fahrzeugLogModal .fm-reset-log-btn:active {
+        transform: translateY(0);
+    }
+
+    #fahrzeugManagerModal .fm-config-btn:disabled {
+        opacity: .55;
+        cursor: not-allowed;
+        transform: none !important;
+        box-shadow: none;
+    }
+
+    #fahrzeugManagerModal .btn-xs,
+    #fahrzeugConfigModal .btn-xs,
+    #fahrzeugLogModal .btn-xs {
+        padding: 3px 7px;
+        font-size: 12px;
+        border-radius: 5px;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler,
+    #fahrzeugConfigModal .fm-spoiler,
+    #fahrzeugLogModal .fm-spoiler {
+        border: 1px solid var(--fm-border);
+        border-radius: 9px;
+        margin-bottom: 10px;
+        overflow: hidden;
+        background: var(--fm-body-bg);
+        box-shadow: 0 2px 6px rgba(0,0,0,.08);
+        transition: box-shadow .2s ease;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler:hover,
+    #fahrzeugConfigModal .fm-spoiler:hover,
+    #fahrzeugLogModal .fm-spoiler:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,.12);
+    }
+
+    #fahrzeugManagerModal .fm-spoiler-header,
+    #fahrzeugConfigModal .fm-spoiler-header,
+    #fahrzeugLogModal .fm-spoiler-header {
+        background: var(--fm-header-bg);
+        color: var(--fm-header-text);
+        padding: 10px 14px;
+        cursor: pointer;
+        font-weight: 700;
+        user-select: none;
+        transition:
+            background-color .18s ease,
+            padding-left .18s ease;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler-header:hover,
+    #fahrzeugConfigModal .fm-spoiler-header:hover,
+    #fahrzeugLogModal .fm-spoiler-header:hover {
+        background: var(--fm-header-hover);
+        padding-left: 17px;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler-body,
+    #fahrzeugConfigModal .fm-spoiler-body,
+    #fahrzeugLogModal .fm-spoiler-body {
+        display: none;
+        padding: 12px;
+        background: var(--fm-body-bg);
+        color: var(--fm-body-text);
+        overflow-x: auto;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler-body.active,
+    #fahrzeugConfigModal .fm-spoiler-body.active,
+    #fahrzeugLogModal .fm-spoiler-body.active {
+        display: block;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler table,
+    #fahrzeugConfigModal .fm-spoiler table,
+    #fahrzeugLogModal .fm-spoiler table {
+        border-collapse: separate;
+        border-spacing: 0;
+        width: 100%;
+        table-layout: auto;
+        min-width: 800px;
+        border: 1px solid var(--fm-border);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler table th,
+    #fahrzeugManagerModal .fm-spoiler table td,
+    #fahrzeugManagerModal .fm-spoiler table .fm-filter-row td,
+    #fahrzeugConfigModal .fm-spoiler table th,
+    #fahrzeugConfigModal .fm-spoiler table td,
+    #fahrzeugConfigModal .fm-spoiler table .fm-filter-row td,
+    #fahrzeugLogModal .fm-spoiler table th,
+    #fahrzeugLogModal .fm-spoiler table td,
+    #fahrzeugLogModal .fm-spoiler table .fm-filter-row td {
+        border: none;
+        border-bottom: 1px solid var(--fm-border);
+        padding: 7px 9px;
+        text-align: center;
+        vertical-align: middle;
+        white-space: nowrap;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler table tbody tr:last-child td,
+    #fahrzeugConfigModal .fm-spoiler table tbody tr:last-child td,
+    #fahrzeugLogModal .fm-spoiler table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler table thead th,
+    #fahrzeugManagerModal .fm-spoiler table .fm-filter-row td,
+    #fahrzeugConfigModal .fm-spoiler table thead th,
+    #fahrzeugConfigModal .fm-spoiler table .fm-filter-row td,
+    #fahrzeugLogModal .fm-spoiler table thead th,
+    #fahrzeugLogModal .fm-spoiler table .fm-filter-row td {
+        background: var(--fm-table-header);
+        font-weight: 700;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler table tbody tr:hover,
+    #fahrzeugConfigModal .fm-spoiler table tbody tr:hover,
+    #fahrzeugLogModal .fm-spoiler table tbody tr:hover {
+        background: var(--fm-table-hover);
+    }
+
+    #fahrzeugLogModal .modal-body table {
+        border-collapse: separate;
+        border-spacing: 0;
+        width: 100%;
+        min-width: 800px;
+        border: 1px solid var(--fm-border);
+        border-radius: 8px;
+        overflow: hidden;
+    }
+
+    #fahrzeugLogModal .modal-body table th,
+    #fahrzeugLogModal .modal-body table td {
+        border: none;
+        border-bottom: 1px solid var(--fm-border);
+        padding: 7px 9px;
+        text-align: center;
+        vertical-align: middle;
+        white-space: nowrap;
+    }
+
+    #fahrzeugLogModal .modal-body table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    #fahrzeugLogModal .modal-body table tbody tr:hover {
+        background: var(--fm-table-hover);
+    }
+
+    #fahrzeugManagerModal .fm-filter-row select,
+    #fahrzeugManagerModal .fm-filter-row button.fm-filter-reset,
+    #fahrzeugConfigModal .fm-filter-row select,
+    #fahrzeugConfigModal .fm-filter-row button.fm-filter-reset,
+    #fahrzeugLogModal .fm-filter-row select,
+    #fahrzeugLogModal .fm-filter-row button.fm-filter-reset {
+        font-size: 12px;
+        padding: 4px 7px;
+        min-width: 100px;
+        width: 100%;
+        border-radius: 6px;
+    }
+
+    #fahrzeugManagerModal .fm-filter-row select,
+    #fahrzeugConfigModal .fm-filter-row select,
+    #fahrzeugLogModal .fm-filter-row select {
+        background: var(--fm-input-bg);
+        color: var(--fm-input-text);
+        border: 1px solid var(--fm-border);
+    }
+
+    #fahrzeugManagerModal input,
+    #fahrzeugManagerModal textarea,
+    #fahrzeugManagerModal select,
+    #fahrzeugConfigModal input,
+    #fahrzeugConfigModal textarea,
+    #fahrzeugConfigModal select,
+    #fahrzeugLogModal input,
+    #fahrzeugLogModal textarea,
+    #fahrzeugLogModal select {
+        background: var(--fm-input-bg);
+        color: var(--fm-input-text);
+        border-color: var(--fm-border);
+    }
+
+    #fahrzeugManagerModal input::placeholder,
+    #fahrzeugManagerModal textarea::placeholder,
+    #fahrzeugConfigModal input::placeholder,
+    #fahrzeugConfigModal textarea::placeholder,
+    #fahrzeugLogModal input::placeholder,
+    #fahrzeugLogModal textarea::placeholder {
+        color: #adb5bd;
+    }
+
+    #fahrzeugManagerModal input:focus,
+    #fahrzeugManagerModal textarea:focus,
+    #fahrzeugManagerModal select:focus,
+    #fahrzeugConfigModal input:focus,
+    #fahrzeugConfigModal textarea:focus,
+    #fahrzeugConfigModal select:focus,
+    #fahrzeugLogModal input:focus,
+    #fahrzeugLogModal textarea:focus,
+    #fahrzeugLogModal select:focus {
+        background: var(--fm-input-bg);
+        color: var(--fm-input-text);
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 3px rgba(13,110,253,.18);
+        outline: none;
+    }
+
+    body.dark #fahrzeugConfigModal input[type="number"],
+    body.dark #fahrzeugConfigModal input[type="text"] {
+        background: var(--fm-input-bg) !important;
+        color: var(--fm-input-text) !important;
+        border: 1px solid var(--fm-border) !important;
+    }
+
+    #fahrzeugManagerModal .fm-select,
+    #fahrzeugConfigModal .fm-select,
+    #fahrzeugLogModal .fm-select {
+        cursor: pointer;
+    }
+
+    #fahrzeugManagerModal .fm-building-profile,
+    #fahrzeugConfigModal .fm-building-profile,
+    #fahrzeugLogModal .fm-building-profile {
+        background: var(--fm-input-bg);
+        color: var(--fm-input-text);
+        border: 1px solid var(--fm-border);
+        border-radius: 6px;
+        padding: 4px 7px;
+    }
+
+    #fahrzeugManagerModal .fm-building-profile:focus,
+    #fahrzeugConfigModal .fm-building-profile:focus,
+    #fahrzeugLogModal .fm-building-profile:focus {
+        outline: none;
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 3px rgba(13,110,253,.18);
+    }
+
+    #fahrzeugManagerModal .fm-vehicle-list,
+    #fahrzeugConfigModal .fm-vehicle-list,
+    #fahrzeugLogModal .fm-vehicle-list {
+        display: inline-block;
+        max-width: 350px;
+        white-space: normal !important;
+        word-break: normal !important;
+        overflow-wrap: normal !important;
+    }
+
+    #fahrzeugManagerModal .fm-badge-green,
+    #fahrzeugConfigModal .fm-badge-green,
+    #fahrzeugLogModal .fm-badge-green {
+        background-color: #198754 !important;
+        color: #fff !important;
+        border-radius: 5px;
+    }
+
+    #fahrzeugManagerModal .fm-building-link,
+    #fahrzeugManagerModal .fm-building-link:visited,
+    #fahrzeugManagerModal .fm-building-link:hover,
+    #fahrzeugManagerModal .fm-building-link:active,
+    #fahrzeugConfigModal .fm-building-link,
+    #fahrzeugConfigModal .fm-building-link:visited,
+    #fahrzeugConfigModal .fm-building-link:hover,
+    #fahrzeugConfigModal .fm-building-link:active,
+    #fahrzeugLogModal .fm-building-link,
+    #fahrzeugLogModal .fm-building-link:visited,
+    #fahrzeugLogModal .fm-building-link:hover,
+    #fahrzeugLogModal .fm-building-link:active {
+        color: inherit !important;
+        font-weight: normal !important;
+        text-decoration: none !important;
+        background: none !important;
+    }
+
+    #fahrzeugManagerModal #fm-progress-container {
+        width: 100%;
+    }
+
+    #fahrzeugManagerModal #fm-progress-text {
+        color: #0d6efd !important;
+    }
+
+    #fahrzeugManagerModal #fm-progress-bar {
+        border-radius: 999px;
+    }
+
+    #fahrzeugLogModal .fm-reset-log-btn {
+        color: #212529;
+        background: #ffc107;
+    }
 `);
 })();
