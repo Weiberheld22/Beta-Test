@@ -623,15 +623,13 @@
     // Nach Typ gruppieren und Spoiler bauen
     function buildBuildingsByType(buildings, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
         const grouped = {};
+        const hiddenBuildings = getHiddenBuildings();
 
         buildings.forEach(b => {
             const typeName = getBuildingTypeName(b);
             if (!typeName) return;
 
-            if (!grouped[typeName]) {
-                grouped[typeName] = [];
-            }
-
+            if (!grouped[typeName]) grouped[typeName] = [];
             grouped[typeName].push(b);
         });
 
@@ -640,24 +638,26 @@
         Object.keys(buildingTypeNames).forEach((key, idx) => {
             const typeName = buildingTypeNames[key];
 
-            if (grouped[typeName]) {
-                const filteredBuildings = grouped[typeName].filter(b => {
-                    const vehiclesCount = (vehicleMap[b.id] || []).length;
-                    const maxVehicles = calcMaxParkingLots(b, lssmBuildingDefs);
-                    const hasFreeVehicleSlot = vehiclesCount < maxVehicles;
-                    const hasFreeStorage = Number(b.storage_available || 0) > 0;
+            if (!grouped[typeName]) return;
 
-                    return hasFreeVehicleSlot || hasFreeStorage;
-                });
+            const filteredBuildings = grouped[typeName].filter(b => {
+                if (hiddenBuildings.includes(Number(b.id))) return false;
 
-                if (filteredBuildings.length > 0) {
-                    html +=
-                        `<div class="fm-spoiler">
-                     <div class="fm-spoiler-header" data-target="fm-spoiler-body-${idx}">${typeName}</div>
-                     <div id="fm-spoiler-body-${idx}" class="fm-spoiler-body">${buildFahrzeugTable(filteredBuildings, idx, vehicleMap, vehicleTypeMap, lssmBuildingDefs)}</div>
-                     </div>`;
-                }
-            }
+                const vehiclesCount = (vehicleMap[b.id] || []).length;
+                const maxVehicles = calcMaxParkingLots(b, lssmBuildingDefs);
+                const hasFreeVehicleSlot = vehiclesCount < maxVehicles;
+                const hasFreeStorage = Number(b.storage_available || 0) > 0;
+
+                return hasFreeVehicleSlot || hasFreeStorage;
+            });
+
+            if (filteredBuildings.length === 0) return;
+
+            html += `
+            <div class="fm-spoiler">
+                <div class="fm-spoiler-header" data-target="fm-spoiler-body-${idx}">${typeName}</div>
+                <div id="fm-spoiler-body-${idx}" class="fm-spoiler-body">${buildFahrzeugTable(filteredBuildings, idx, vehicleMap, vehicleTypeMap, lssmBuildingDefs)}</div>
+            </div>`;
         });
 
         return html;
@@ -1576,7 +1576,7 @@
               Filter zurücksetzen
             </button>
           </td>
-          
+
           <td></td>
           <td></td>
 
@@ -1942,106 +1942,54 @@
     }
 
     // Modal für ausgeblendete Wachen
-    function showHiddenBuildingsModal(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
+    function showHiddenBuildingsModal(buildings, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
         document.getElementById('fm-hidden-buildings-modal')?.remove();
 
         const hiddenIds = getHiddenBuildings();
-        const hiddenBuildings = buildings.filter(b =>
-                                                 hiddenIds.includes(Number(b.id))
-                                                ).sort((a, b) => a.caption.localeCompare(b.caption, 'de'));
+        const hiddenBuildings = buildings
+        .filter(b => hiddenIds.includes(Number(b.id)))
+        .sort((a, b) => a.caption.localeCompare(b.caption, 'de'));
 
         const modal = document.createElement('div');
         modal.id = 'fm-hidden-buildings-modal';
-        modal.style.cssText = `
-        position:fixed;
-        inset:0;
-        z-index:10000;
-        background:rgba(0,0,0,.5);
-        display:flex;
-        align-items:center;
-        justify-content:center;
-    `;
 
         modal.innerHTML = `
-        <div style="
-            width:420px;
-            max-width:90%;
-            max-height:80vh;
-            background:var(--spoiler-body-bg,#fff);
-            color:var(--spoiler-body-text,#333);
-            border:1px solid var(--spoiler-border,#ccc);
-            border-radius:6px;
-            box-shadow:0 5px 20px rgba(0,0,0,.4);
-            overflow:hidden;
-        ">
-            <div style="
-                display:flex;
-                justify-content:space-between;
-                align-items:center;
-                padding:10px 12px;
-                border-bottom:1px solid var(--spoiler-border,#ccc);
-                font-weight:bold;
-            ">
+        <div class="fm-hidden-buildings-dialog">
+            <div class="fm-hidden-buildings-header">
                 <span>👁 Ausgeblendete Wachen</span>
-                <button type="button"
-                        class="btn btn-default btn-xs fm-hidden-buildings-close">
-                    ×
-                </button>
             </div>
 
-            <div style="
-                padding:10px 12px;
-                max-height:50vh;
-                overflow-y:auto;
-            ">
+            <div class="fm-hidden-buildings-body">
                 ${
         hiddenBuildings.length
             ? hiddenBuildings.map(b => `
-                        <div style="
-                            display:flex;
-                            justify-content:space-between;
-                            align-items:center;
-                            gap:10px;
-                            padding:6px 0;
-                            border-bottom:1px solid var(--spoiler-border,#eee);
-                        ">
-                            <span>${b.caption}</span>
-                            <button type="button"
-                                    class="btn btn-primary btn-xs fm-unhide-building"
-                                    data-building-id="${b.id}"
-                                    data-table="${tableId}">
-                                Anzeigen
-                            </button>
-                        </div>
-                    `).join('')
+                            <div class="fm-hidden-building-row">
+                                <span>${buildBuildingLink(b)}</span>
+                                <button type="button"
+                                        class="fm-unhide-building"
+                                        data-building-id="${b.id}">
+                                    Anzeigen
+                                </button>
+                            </div>
+                        `).join('')
         : `
-                        <div style="
-                            text-align:center;
-                            padding:15px 5px;
-                            color:var(--text-color-secondary,#999);
-                            font-style:italic;
-                        ">
-                            Keine Wachen ausgeblendet.
-                        </div>
-                    `
+                            <div class="fm-hidden-buildings-empty">
+                                Keine Wachen ausgeblendet.
+                            </div>
+                        `
     }
             </div>
 
-            <div style="
-                display:flex;
-                justify-content:space-between;
-                padding:10px 12px;
-                border-top:1px solid var(--spoiler-border,#ccc);
-            ">
+            <div class="fm-hidden-buildings-footer">
                 <button type="button"
-                        class="btn btn-danger btn-xs fm-unhide-all-buildings"
+                        class="fm-unhide-all-buildings"
                         ${hiddenBuildings.length ? '' : 'disabled'}>
                     Alle wieder anzeigen
                 </button>
 
                 <button type="button"
-                        class="btn btn-default btn-xs fm-hidden-buildings-close">
-                    Schließen
+                        class="fm-hidden-buildings-close">
+                    Schließen ✖
                 </button>
             </div>
         </div>
@@ -2049,104 +1997,77 @@
 
         document.body.appendChild(modal);
 
-        modal.querySelectorAll('.fm-hidden-buildings-close').forEach(button => {
-            button.addEventListener('click', () => modal.remove());
+        modal.querySelector('.fm-hidden-buildings-close')?.addEventListener('click', () => {
+            modal.remove();
         });
+
         modal.addEventListener('click', event => {
-            if (event.target === modal) {
-                modal.remove();
-            }
+            if (event.target === modal) modal.remove();
         });
+
         modal.querySelectorAll('.fm-unhide-building').forEach(button => {
             button.addEventListener('click', () => {
                 unhideBuilding(button.dataset.buildingId);
-
                 modal.remove();
 
-                rebuildFahrzeugTableWithCurrentFilters(
-                    buildings,
-                    tableId,
-                    vehicleMap,
-                    vehicleTypeMap,
-                    lssmBuildingDefs
+                const content = document.getElementById('fahrzeug-manager-content');
+                if (!content) return;
+
+                content.innerHTML = buildBuildingsByType(
+                    buildingDataGlobal,
+                    vehicleMapGlobal,
+                    vehicleTypeMapGlobal,
+                    lssmBuildingDefsGlobal
                 );
+
+                document.querySelectorAll('.fm-spoiler-header').forEach(header => {
+                    header.addEventListener('click', () => {
+                        const targetId = header.dataset.target;
+
+                        document.querySelectorAll('.fm-spoiler-body').forEach(body => {
+                            body.id === targetId
+                                ? body.classList.toggle('active')
+                            : body.classList.remove('active');
+                        });
+                    });
+                });
+
+                attachAllTableListeners();
+                updateSelectedCosts();
+                updateBuyButtons();
             });
         });
+
         modal.querySelector('.fm-unhide-all-buildings')?.addEventListener('click', () => {
             setHiddenBuildings([]);
             modal.remove();
 
-            buildFahrzeugTable(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs);
+            const content = document.getElementById('fahrzeug-manager-content');
+            if (!content) return;
+
+            content.innerHTML = buildBuildingsByType(
+                buildingDataGlobal,
+                vehicleMapGlobal,
+                vehicleTypeMapGlobal,
+                lssmBuildingDefsGlobal
+            );
+
+            document.querySelectorAll('.fm-spoiler-header').forEach(header => {
+                header.addEventListener('click', () => {
+                    const targetId = header.dataset.target;
+
+                    document.querySelectorAll('.fm-spoiler-body').forEach(body => {
+                        body.id === targetId
+                            ? body.classList.toggle('active')
+                        : body.classList.remove('active');
+                    });
+                });
+            });
+
+            attachAllTableListeners();
+            updateSelectedCosts();
+            updateBuyButtons();
         });
-    }
-
-    // Tabellen neu erstellen nach einbelenen von Wachen
-    function rebuildFahrzeugTableWithCurrentFilters(buildings, tableId, vehicleMap, vehicleTypeMap, lssmBuildingDefs) {
-        const oldTable = document.getElementById(`fm-table-${tableId}`);
-        if (!oldTable) return;
-
-        const filterLeitstelle =
-              oldTable.querySelector('.fm-filter-leitstelle')?.value || '';
-
-        const filterWache =
-              oldTable.querySelector('.fm-filter-wache')?.value || '';
-
-        const container = oldTable.parentElement;
-
-        container.style.visibility = 'hidden';
-
-        // Tabelle zunächst komplett ohne Filter aufbauen
-        container.innerHTML = buildFahrzeugTable(
-            buildings,
-            tableId,
-            vehicleMap,
-            vehicleTypeMap,
-            lssmBuildingDefs,
-            {
-                leitstelle: '',
-                wache: ''
-            }
-        );
-
-        // setupTableEventListeners() wird in buildFahrzeugTable()
-        // bereits per setTimeout eingerichtet.
-        setTimeout(() => {
-            const newTable =
-                  document.getElementById(`fm-table-${tableId}`);
-
-            if (!newTable) {
-                container.style.visibility = 'visible';
-                return;
-            }
-
-            const leitstelleSelect =
-                  newTable.querySelector('.fm-filter-leitstelle');
-
-            const wacheSelect =
-                  newTable.querySelector('.fm-filter-wache');
-
-            if (leitstelleSelect) {
-                leitstelleSelect.value = filterLeitstelle;
-            }
-
-            if (wacheSelect) {
-                wacheSelect.value = filterWache;
-            }
-
-            // Die Filter nach dem Setzen der Selects anwenden
-            const leitstelleEvent =
-                  new Event('change', { bubbles: true });
-
-            if (leitstelleSelect) {
-                leitstelleSelect.dispatchEvent(leitstelleEvent);
-            } else if (wacheSelect) {
-                wacheSelect.dispatchEvent(
-                    new Event('change', { bubbles: true })
-                );
-            }
-
-            container.style.visibility = 'visible';
-        }, 0);
     }
 
     // Bereitet die Listner vor
@@ -2337,34 +2258,33 @@
             );
         });
         table.querySelectorAll('.fm-hide-building').forEach(button => {
-            button.addEventListener('click', () => {
-                const buildingId = Number(button.dataset.buildingId);
-                const row = button.closest('tr');
+    button.addEventListener('click', () => {
+        const buildingId = Number(button.dataset.buildingId);
+        const row = button.closest('tr');
 
-                hideBuilding(buildingId);
+        hideBuilding(buildingId);
 
-                if (row) {
-                    const checkbox = row.querySelector('.fm-select');
+        if (row) {
+            const checkbox = row.querySelector('.fm-select');
 
-                    if (checkbox) {
-                        checkbox.checked = false;
-                    }
+            if (checkbox) {
+                checkbox.checked = false;
+            }
 
-                    row.remove();
-                }
+            row.remove();
+        }
 
-                updateBuyButtons(table);
-            });
-        });
-        table.querySelector('.fm-show-hidden-buildings')?.addEventListener('click', () => {
-            showHiddenBuildingsModal(
-                buildings,
-                tableId,
-                vehicleMap,
-                vehicleTypeMap,
-                lssmBuildingDefs
-            );
-        });
+        updateBuyButtons(table);
+
+        if (!table.querySelector('tbody tr')) {
+            const spoiler = table.closest('.fm-spoiler');
+
+            if (spoiler) {
+                spoiler.remove();
+            }
+        }
+    });
+});
         applyRowFilter();
     }
 
@@ -2393,15 +2313,6 @@
             maxVehicles - normalVehiclesOnBuilding.length,
             0
         );
-        console.log('[FM][THW DEBUG]', {
-            building: building.caption,
-            buildingType: building.building_type,
-            buildingLevel: building.level,
-            maxVehicles,
-            existingVehicles: normalVehiclesOnBuilding.length,
-            remainingParking,
-            missingVehicleIds
-        });
         const existingAussenlastbehaelter = vehiclesOnBuilding.filter(
             v => isBesonderheit(v.vehicle_type)
         ).length;
@@ -2923,16 +2834,7 @@
                                 max - current,
                                 0
                             );
-                            console.log('[FM][BUY THW DEBUG]', {
-                                buildingId,
-                                building: buildingObj.caption,
-                                buildingType: buildingObj.building_type,
-                                buildingLevel: buildingObj.level,
-                                maxVehicles: max,
-                                currentVehicles: current,
-                                freeSlots,
-                                wantedItems: requests
-                            });
+
                         } catch {
                             freeSlots = 0;
                         }
@@ -3432,17 +3334,23 @@
         }
     }
 
+    // Sperrt gewisse Buttons
     function setConfigButtonLoading(loading) {
-        const btn = document.getElementById('fm-config-btn');
-        if (!btn) return;
+        const buttons = [
+            document.getElementById('fm-config-btn'),
+            document.querySelector('#fahrzeugManagerModal .fm-show-hidden-buildings'),
+            document.getElementById('fm-log-btn')
+        ].filter(Boolean);
 
-        btn.disabled = loading;
-        btn.style.backgroundColor = loading ? '#777' : '';
-        btn.style.color = loading ? '#ccc' : '';
-        btn.style.borderColor = loading ? '#666' : '';
-        btn.style.opacity = loading ? '0.6' : '';
-        btn.style.cursor = loading ? 'not-allowed' : '';
-        btn.title = loading ? 'Daten werden noch geladen …' : '';
+        buttons.forEach(btn => {
+            btn.disabled = loading;
+            btn.style.backgroundColor = loading ? '#777' : '';
+            btn.style.color = loading ? '#ccc' : '';
+            btn.style.borderColor = loading ? '#666' : '';
+            btn.style.opacity = loading ? '0.6' : '';
+            btn.style.cursor = loading ? 'not-allowed' : '';
+            btn.title = loading ? 'Daten werden noch geladen …' : '';
+        });
     }
 
     document.addEventListener('click', e => {
@@ -3480,7 +3388,18 @@
             ensureModalInserted('fahrzeugManagerModal', modalHTML);
             $('#fahrzeugManagerModal').modal('show');
         }
-    }); // Managerbutton
+
+        if (e.target?.classList.contains('fm-show-hidden-buildings')) {
+            e.preventDefault();
+
+            showHiddenBuildingsModal(
+                buildingDataGlobal,
+                vehicleMapGlobal,
+                vehicleTypeMapGlobal,
+                lssmBuildingDefsGlobal
+            );
+        }
+    }); // Manager / ausgeblendete Wachen
     document.addEventListener('click', e => {
         if (e.target && e.target.id === 'fm-export-profiles') {
             e.preventDefault();
@@ -3670,10 +3589,11 @@
                   <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                       <h3 class="modal-title" id="fahrzeugManagerLabel" style="font-weight: bold; margin: 0;">🚒 Der Fahrzeug-Manager🚒</h3>
                       <div style="display: flex; gap: 10px; align-items: center;">
-                          <button type="button" class="fm-config-btn" id="fm-config-btn" disabled title="Daten werden noch geladen …">Fahrzeugkonfiguration ⚙️</button>
-                          <button type="button" class="fm-log-btn" id="fm-log-btn">Kaufprotokoll 📝</button>
-                          <button type="button" class="fm-close-btn" data-dismiss="modal">Schließen ✖</button>
-                      </div>
+    <button type="button" class="fm-config-btn" id="fm-config-btn">Fahrzeugkonfiguration ⚙️</button>
+    <button type="button" class="fm-show-hidden-buildings" title="Ausgeblendete Wachen verwalten">👁 Wachen anzeigen</button>
+    <button type="button" class="fm-log-btn" id="fm-log-btn">Kaufprotokoll 📝</button>
+    <button type="button" class="fm-close-btn" data-dismiss="modal">Schließen ✖</button>
+</div>
                   </div>
                     <div class="fm-description"
                          style="font-size: 14px; color: #555; background-color: var(--spoiler-body-bg); padding: 5px 0; line-height: 1.5;">
@@ -3772,10 +3692,11 @@
     </div>`;
 
     // CSS
-GM_addStyle(`
+    GM_addStyle(`
     #fahrzeugManagerModal,
     #fahrzeugConfigModal,
-    #fahrzeugLogModal {
+    #fahrzeugLogModal,
+    #fm-hidden-buildings-modal {
         --fm-border: #d9dee3;
         --fm-header-bg: #f8f9fa;
         --fm-header-text: #212529;
@@ -3792,7 +3713,8 @@ GM_addStyle(`
 
     body.dark #fahrzeugManagerModal,
     body.dark #fahrzeugConfigModal,
-    body.dark #fahrzeugLogModal {
+    body.dark #fahrzeugLogModal,
+    body.dark #fm-hidden-buildings-modal {
         --fm-border: #454b52;
         --fm-header-bg: #292d32;
         --fm-header-text: #f1f3f5;
@@ -3807,17 +3729,10 @@ GM_addStyle(`
         --fm-modal-text: #e2e6ea;
     }
 
-    #fahrzeugManagerModal {
-        z-index: 10000 !important;
-    }
-
-    #fahrzeugConfigModal {
-        z-index: 10001 !important;
-    }
-
-    #fahrzeugLogModal {
-        z-index: 10002 !important;
-    }
+    #fahrzeugManagerModal { z-index: 10000 !important; }
+    #fahrzeugConfigModal { z-index: 10001 !important; }
+    #fahrzeugLogModal { z-index: 10002 !important; }
+    #fm-hidden-buildings-modal { z-index: 10003 !important; }
 
     #fahrzeugManagerModal .modal-dialog {
         max-width: 2500px;
@@ -3856,18 +3771,13 @@ GM_addStyle(`
         overflow-x: auto;
     }
 
-    #fahrzeugConfigModal .modal-content {
-        overflow-x: auto;
-    }
-
-    #fahrzeugLogModal .modal-content {
-        max-height: 85vh;
-        overflow: hidden;
-    }
+    #fahrzeugConfigModal .modal-content { overflow-x: auto; }
+    #fahrzeugLogModal .modal-content { max-height: 85vh; }
 
     #fahrzeugManagerModal .modal-header,
     #fahrzeugConfigModal .modal-header,
     #fahrzeugLogModal .modal-header {
+        padding: 14px 18px;
         background: var(--fm-body-bg);
         color: var(--fm-body-text);
         border-bottom: 1px solid var(--fm-border);
@@ -3878,12 +3788,6 @@ GM_addStyle(`
         position: sticky;
         top: 0;
         z-index: 10;
-        padding: 14px 18px;
-    }
-
-    #fahrzeugConfigModal .modal-header,
-    #fahrzeugLogModal .modal-header {
-        padding: 14px 18px;
     }
 
     #fahrzeugManagerModal .modal-title,
@@ -3895,6 +3799,7 @@ GM_addStyle(`
     #fahrzeugManagerModal .modal-body,
     #fahrzeugConfigModal .modal-body,
     #fahrzeugLogModal .modal-body {
+        padding: 16px;
         background: var(--fm-body-bg);
         color: var(--fm-body-text);
     }
@@ -3902,18 +3807,11 @@ GM_addStyle(`
     #fahrzeugManagerModal .modal-body {
         overflow-y: auto;
         flex-grow: 1;
-        padding: 16px;
-    }
-
-    #fahrzeugConfigModal .modal-body {
-        padding: 16px;
     }
 
     #fahrzeugLogModal .modal-body {
-        padding: 16px;
         max-height: calc(85vh - 75px);
-        overflow-y: auto;
-        overflow-x: auto;
+        overflow: auto;
     }
 
     #fahrzeugManagerModal .fm-description {
@@ -3921,23 +3819,27 @@ GM_addStyle(`
         background: var(--fm-body-bg) !important;
     }
 
+    /* Buttons */
     #fahrzeugManagerModal .fm-close-btn,
     #fahrzeugManagerModal .fm-config-btn,
+    #fahrzeugManagerModal .fm-show-hidden-buildings,
     #fahrzeugManagerModal .fm-log-btn,
     #fahrzeugManagerModal .fm-export-btn,
     #fahrzeugManagerModal .fm-import-btn,
+    #fahrzeugManagerModal .fm-reset-log-btn,
     #fahrzeugConfigModal .fm-close-btn,
     #fahrzeugConfigModal .fm-config-btn,
+    #fahrzeugConfigModal .fm-show-hidden-buildings,
     #fahrzeugConfigModal .fm-log-btn,
     #fahrzeugConfigModal .fm-export-btn,
     #fahrzeugConfigModal .fm-import-btn,
+    #fahrzeugConfigModal .fm-reset-log-btn,
     #fahrzeugLogModal .fm-close-btn,
     #fahrzeugLogModal .fm-config-btn,
+    #fahrzeugLogModal .fm-show-hidden-buildings,
     #fahrzeugLogModal .fm-log-btn,
     #fahrzeugLogModal .fm-export-btn,
     #fahrzeugLogModal .fm-import-btn,
-    #fahrzeugManagerModal .fm-reset-log-btn,
-    #fahrzeugConfigModal .fm-reset-log-btn,
     #fahrzeugLogModal .fm-reset-log-btn {
         border: none;
         border-radius: 7px;
@@ -3945,11 +3847,7 @@ GM_addStyle(`
         font-size: 13px;
         cursor: pointer;
         font-weight: 600;
-        transition:
-            background-color .18s ease,
-            transform .12s ease,
-            box-shadow .18s ease,
-            opacity .18s ease;
+        transition: background-color .18s ease, transform .12s ease, box-shadow .18s ease, opacity .18s ease;
         box-shadow: 0 2px 5px rgba(0,0,0,.15);
     }
 
@@ -3973,6 +3871,15 @@ GM_addStyle(`
 
     #fahrzeugManagerModal .fm-config-btn:hover {
         background: #0b5ed7;
+    }
+
+    #fahrzeugManagerModal .fm-show-hidden-buildings {
+        color: #fff;
+        background: #198754;
+    }
+
+    #fahrzeugManagerModal .fm-show-hidden-buildings:hover {
+        background: #157347;
     }
 
     #fahrzeugManagerModal .fm-log-btn {
@@ -4012,38 +3919,22 @@ GM_addStyle(`
         background: #ffca2c;
     }
 
-    #fahrzeugManagerModal .fm-close-btn:hover,
-    #fahrzeugManagerModal .fm-config-btn:hover,
-    #fahrzeugManagerModal .fm-log-btn:hover,
-    #fahrzeugManagerModal .fm-export-btn:hover,
-    #fahrzeugManagerModal .fm-import-btn:hover,
-    #fahrzeugConfigModal .fm-close-btn:hover,
-    #fahrzeugConfigModal .fm-config-btn:hover,
-    #fahrzeugConfigModal .fm-log-btn:hover,
-    #fahrzeugConfigModal .fm-export-btn:hover,
-    #fahrzeugConfigModal .fm-import-btn:hover,
-    #fahrzeugLogModal .fm-close-btn:hover,
-    #fahrzeugLogModal .fm-config-btn:hover,
-    #fahrzeugLogModal .fm-log-btn:hover,
-    #fahrzeugLogModal .fm-export-btn:hover,
-    #fahrzeugLogModal .fm-import-btn:hover,
-    #fahrzeugLogModal .fm-reset-log-btn:hover {
+    #fahrzeugManagerModal button[class*="fm-"]:hover,
+    #fahrzeugConfigModal button[class*="fm-"]:hover,
+    #fahrzeugLogModal button[class*="fm-"]:hover {
         transform: translateY(-1px);
         box-shadow: 0 4px 9px rgba(0,0,0,.2);
     }
 
-    #fahrzeugManagerModal .fm-close-btn:active,
-    #fahrzeugManagerModal .fm-config-btn:active,
-    #fahrzeugManagerModal .fm-log-btn:active,
-    #fahrzeugConfigModal .fm-close-btn:active,
-    #fahrzeugConfigModal .fm-export-btn:active,
-    #fahrzeugConfigModal .fm-import-btn:active,
-    #fahrzeugLogModal .fm-close-btn:active,
-    #fahrzeugLogModal .fm-reset-log-btn:active {
+    #fahrzeugManagerModal button[class*="fm-"]:active,
+    #fahrzeugConfigModal button[class*="fm-"]:active,
+    #fahrzeugLogModal button[class*="fm-"]:active {
         transform: translateY(0);
     }
 
-    #fahrzeugManagerModal .fm-config-btn:disabled {
+    #fahrzeugManagerModal .fm-config-btn:disabled,
+    #fahrzeugManagerModal .fm-show-hidden-buildings:disabled,
+    #fahrzeugManagerModal .fm-log-btn:disabled {
         opacity: .55;
         cursor: not-allowed;
         transform: none !important;
@@ -4058,6 +3949,7 @@ GM_addStyle(`
         border-radius: 5px;
     }
 
+    /* Spoiler */
     #fahrzeugManagerModal .fm-spoiler,
     #fahrzeugConfigModal .fm-spoiler,
     #fahrzeugLogModal .fm-spoiler {
@@ -4079,15 +3971,13 @@ GM_addStyle(`
     #fahrzeugManagerModal .fm-spoiler-header,
     #fahrzeugConfigModal .fm-spoiler-header,
     #fahrzeugLogModal .fm-spoiler-header {
+        padding: 10px 14px;
         background: var(--fm-header-bg);
         color: var(--fm-header-text);
-        padding: 10px 14px;
         cursor: pointer;
         font-weight: 700;
         user-select: none;
-        transition:
-            background-color .18s ease,
-            padding-left .18s ease;
+        transition: background-color .18s ease, padding-left .18s ease;
     }
 
     #fahrzeugManagerModal .fm-spoiler-header:hover,
@@ -4113,58 +4003,10 @@ GM_addStyle(`
         display: block;
     }
 
+    /* Tabellen */
     #fahrzeugManagerModal .fm-spoiler table,
     #fahrzeugConfigModal .fm-spoiler table,
-    #fahrzeugLogModal .fm-spoiler table {
-        border-collapse: separate;
-        border-spacing: 0;
-        width: 100%;
-        table-layout: auto;
-        min-width: 800px;
-        border: 1px solid var(--fm-border);
-        border-radius: 8px;
-        overflow: hidden;
-    }
-
-    #fahrzeugManagerModal .fm-spoiler table th,
-    #fahrzeugManagerModal .fm-spoiler table td,
-    #fahrzeugManagerModal .fm-spoiler table .fm-filter-row td,
-    #fahrzeugConfigModal .fm-spoiler table th,
-    #fahrzeugConfigModal .fm-spoiler table td,
-    #fahrzeugConfigModal .fm-spoiler table .fm-filter-row td,
-    #fahrzeugLogModal .fm-spoiler table th,
-    #fahrzeugLogModal .fm-spoiler table td,
-    #fahrzeugLogModal .fm-spoiler table .fm-filter-row td {
-        border: none;
-        border-bottom: 1px solid var(--fm-border);
-        padding: 7px 9px;
-        text-align: center;
-        vertical-align: middle;
-        white-space: nowrap;
-    }
-
-    #fahrzeugManagerModal .fm-spoiler table tbody tr:last-child td,
-    #fahrzeugConfigModal .fm-spoiler table tbody tr:last-child td,
-    #fahrzeugLogModal .fm-spoiler table tbody tr:last-child td {
-        border-bottom: none;
-    }
-
-    #fahrzeugManagerModal .fm-spoiler table thead th,
-    #fahrzeugManagerModal .fm-spoiler table .fm-filter-row td,
-    #fahrzeugConfigModal .fm-spoiler table thead th,
-    #fahrzeugConfigModal .fm-spoiler table .fm-filter-row td,
-    #fahrzeugLogModal .fm-spoiler table thead th,
-    #fahrzeugLogModal .fm-spoiler table .fm-filter-row td {
-        background: var(--fm-table-header);
-        font-weight: 700;
-    }
-
-    #fahrzeugManagerModal .fm-spoiler table tbody tr:hover,
-    #fahrzeugConfigModal .fm-spoiler table tbody tr:hover,
-    #fahrzeugLogModal .fm-spoiler table tbody tr:hover {
-        background: var(--fm-table-hover);
-    }
-
+    #fahrzeugLogModal .fm-spoiler table,
     #fahrzeugLogModal .modal-body table {
         border-collapse: separate;
         border-spacing: 0;
@@ -4175,6 +4017,15 @@ GM_addStyle(`
         overflow: hidden;
     }
 
+    #fahrzeugManagerModal .fm-spoiler table th,
+    #fahrzeugManagerModal .fm-spoiler table td,
+    #fahrzeugManagerModal .fm-filter-row td,
+    #fahrzeugConfigModal .fm-spoiler table th,
+    #fahrzeugConfigModal .fm-spoiler table td,
+    #fahrzeugConfigModal .fm-filter-row td,
+    #fahrzeugLogModal .fm-spoiler table th,
+    #fahrzeugLogModal .fm-spoiler table td,
+    #fahrzeugLogModal .fm-filter-row td,
     #fahrzeugLogModal .modal-body table th,
     #fahrzeugLogModal .modal-body table td {
         border: none;
@@ -4185,14 +4036,31 @@ GM_addStyle(`
         white-space: nowrap;
     }
 
+    #fahrzeugManagerModal .fm-spoiler table tbody tr:last-child td,
+    #fahrzeugConfigModal .fm-spoiler table tbody tr:last-child td,
+    #fahrzeugLogModal .fm-spoiler table tbody tr:last-child td,
     #fahrzeugLogModal .modal-body table tbody tr:last-child td {
         border-bottom: none;
     }
 
+    #fahrzeugManagerModal .fm-spoiler table thead th,
+    #fahrzeugManagerModal .fm-filter-row td,
+    #fahrzeugConfigModal .fm-spoiler table thead th,
+    #fahrzeugConfigModal .fm-filter-row td,
+    #fahrzeugLogModal .fm-spoiler table thead th,
+    #fahrzeugLogModal .fm-filter-row td {
+        background: var(--fm-table-header);
+        font-weight: 700;
+    }
+
+    #fahrzeugManagerModal .fm-spoiler table tbody tr:hover,
+    #fahrzeugConfigModal .fm-spoiler table tbody tr:hover,
+    #fahrzeugLogModal .fm-spoiler table tbody tr:hover,
     #fahrzeugLogModal .modal-body table tbody tr:hover {
         background: var(--fm-table-hover);
     }
 
+    /* Filter */
     #fahrzeugManagerModal .fm-filter-row select,
     #fahrzeugManagerModal .fm-filter-row button.fm-filter-reset,
     #fahrzeugConfigModal .fm-filter-row select,
@@ -4208,12 +4076,7 @@ GM_addStyle(`
 
     #fahrzeugManagerModal .fm-filter-row select,
     #fahrzeugConfigModal .fm-filter-row select,
-    #fahrzeugLogModal .fm-filter-row select {
-        background: var(--fm-input-bg);
-        color: var(--fm-input-text);
-        border: 1px solid var(--fm-border);
-    }
-
+    #fahrzeugLogModal .fm-filter-row select,
     #fahrzeugManagerModal input,
     #fahrzeugManagerModal textarea,
     #fahrzeugManagerModal select,
@@ -4320,21 +4183,142 @@ GM_addStyle(`
         background: none !important;
     }
 
-    #fahrzeugManagerModal #fm-progress-container {
-        width: 100%;
+    #fahrzeugManagerModal #fm-progress-container { width: 100%; }
+    #fahrzeugManagerModal #fm-progress-text { color: #0d6efd !important; }
+    #fahrzeugManagerModal #fm-progress-bar { border-radius: 999px; }
+
+    /* Ausgeblendete Wachen */
+    #fm-hidden-buildings-modal {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: #f4f5f7;
     }
 
-    #fahrzeugManagerModal #fm-progress-text {
-        color: #0d6efd !important;
+    body.dark #fm-hidden-buildings-modal {
+        background: #171a1d;
     }
 
-    #fahrzeugManagerModal #fm-progress-bar {
-        border-radius: 999px;
+    #fm-hidden-buildings-modal .fm-hidden-buildings-dialog {
+        width: 700px;
+        max-width: 100%;
+        max-height: 80vh;
+        display: flex;
+        flex-direction: column;
+        background: var(--fm-modal-bg);
+        color: var(--fm-modal-text);
+        border: 1px solid var(--fm-border);
+        border-radius: 12px;
+        box-shadow: 0 12px 40px rgba(0,0,0,.25);
+        overflow: hidden;
     }
 
-    #fahrzeugLogModal .fm-reset-log-btn {
-        color: #212529;
-        background: #ffc107;
+    #fm-hidden-buildings-modal .fm-hidden-buildings-header {
+        padding: 14px 18px;
+        background: var(--fm-body-bg);
+        color: var(--fm-header-text);
+        border-bottom: 1px solid var(--fm-border);
+        font-size: 16px;
+        font-weight: 700;
+    }
+
+    #fm-hidden-buildings-modal .fm-hidden-buildings-body {
+        padding: 16px;
+        overflow-y: auto;
+        background: var(--fm-body-bg);
+        color: var(--fm-body-text);
+    }
+
+    #fm-hidden-buildings-modal .fm-hidden-building-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 9px 10px;
+        border-bottom: 1px solid var(--fm-border);
+        border-radius: 6px;
+        transition: background-color .18s ease;
+    }
+
+    #fm-hidden-buildings-modal .fm-hidden-building-row:last-child {
+        border-bottom: none;
+    }
+
+    #fm-hidden-buildings-modal .fm-hidden-building-row:hover {
+        background: var(--fm-table-hover);
+    }
+
+    #fm-hidden-buildings-modal .fm-hidden-building-row > span {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    #fm-hidden-buildings-modal .fm-hidden-building-row button,
+    #fm-hidden-buildings-modal .fm-hidden-buildings-footer button {
+        flex-shrink: 0;
+        border: none;
+        border-radius: 7px;
+        padding: 6px 12px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: background-color .18s ease, transform .12s ease, box-shadow .18s ease, opacity .18s ease;
+        box-shadow: 0 2px 5px rgba(0,0,0,.15);
+    }
+
+    #fm-hidden-buildings-modal .fm-unhide-building {
+        color: #fff;
+        background: #198754;
+    }
+
+    #fm-hidden-buildings-modal .fm-unhide-building:hover {
+        background: #157347;
+    }
+
+    #fm-hidden-buildings-modal .fm-unhide-all-buildings,
+    #fm-hidden-buildings-modal .fm-hidden-buildings-close {
+        color: #fff;
+        background: #dc3545;
+    }
+
+    #fm-hidden-buildings-modal .fm-unhide-all-buildings:hover,
+    #fm-hidden-buildings-modal .fm-hidden-buildings-close:hover {
+        background: #c82333;
+    }
+
+    #fm-hidden-buildings-modal .fm-hidden-building-row button:hover,
+    #fm-hidden-buildings-modal .fm-hidden-buildings-footer button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 4px 9px rgba(0,0,0,.2);
+    }
+
+    #fm-hidden-buildings-modal .fm-unhide-all-buildings:disabled {
+        opacity: .55;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+    }
+
+    #fm-hidden-buildings-modal .fm-hidden-buildings-empty {
+        padding: 25px 10px;
+        color: var(--fm-body-text);
+        text-align: center;
+        opacity: .7;
+        font-style: italic;
+    }
+
+    #fm-hidden-buildings-modal .fm-hidden-buildings-footer {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 12px 16px;
+        background: var(--fm-body-bg);
+        border-top: 1px solid var(--fm-border);
     }
 `);
 })();
