@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         [LSS] Bau-Manager (Beta)
+// @name         [LSS] 50 - Bau-Manager (Beta)
 // @namespace    http://tampermonkey.net/
-// @version      0.9.5
-// @description  Hiermit kannst du Wachen & Gebäude schnell in Serie bauen
+// @version      0.9.8
+// @description  Erleichtert die Planung und den Bau mehrerer Gebäude mit Bauvorlagen, Serienbau und globalen Einstellungen.
 // @author       Caddy21
 // @match        https://www.leitstellenspiel.de/*
 // @match        https://polizei.leitstellenspiel.de/*
@@ -13,12 +13,11 @@
 (function () {
     'use strict';
 
-    const DEBUG = true;
+    const DEBUG = false;
+    const HIDE_COINS_BUTTON = true;
     const log = (...args) => DEBUG && console.info('[LSS-MB]', ...args);
-    const HIDE_COINS_BUTTON = false;
     const ALLIANCE_SCHOOL_TYPES = new Set([1, 3, 8, 10, 27]);
     const DYNAMIC_COST_TYPES = new Set([
-        // Feuerwehr
         0, 18, // Feuerwache, Kleinwache
         6, 19, // Polizeiwache, Kleinwache
         9,     // THW
@@ -33,28 +32,25 @@
     const BUILD_COST_CACHE = {};
     const FIRE_STATION_SMALL_TYPE = 18;
     const FIRE_STATION_SMALL_CREDIT_CAP = 1_000_000;
+    const HELICOPTER_LIMIT_TYPES = {
+        RTH: {
+            buildingType: 5
+        },
+        POLICE: {
+            buildingType: 13
+        },
+        SEA: {
+            buildingType: 28
+        }
+    };
     const BUTTON_CLASSES = {
-        primary: 'btn btn-primary btn-sm', // Blau
-        info: 'btn btn-info btn-sm', // Hellblau
-        success: 'btn btn-success btn-sm', // Grün
         danger: 'btn btn-danger btn-sm', // Rot
         warning: 'btn btn-warning btn-sm', // Gelb
-        secondary: 'btn btn-secondary btn-sm', // Grau
-        dark: 'btn btn-dark btn-sm', // Schwarz
+        success: 'btn btn-success btn-sm', // Grün
+        primary: 'btn btn-primary btn-sm', // Blau
+        info: 'btn btn-info btn-sm', // Hellblau
     };
-    const STATIC_COSTS = [
-        { keywords: ['krankenhaus'], credits: 200000, coins: 35 },
-        { keywords: ['polizeihubschrauberstation', 'rettungshubschrauber-station', 'hubschrauberstation seenotrettung' ], credits: 1000000, coins: 50 },
-        { keywords: ['wasserrettung'], credits: 500000, coins: 50 },
-        { keywords: ['polizei-sondereinheiten'], credits: 400000, coins: 40 },
-        { keywords: ['rettungshundestaffel'], credits: 450000, coins: 50 },
-        { keywords: ['reiterstaffel'], credits: 300000, coins: 50 },
-        { keywords: ['bereitschaftspolizei'], credits: 500000, coins: 50 },
-        { keywords: ['bereitstellungsraum'], credits: 0, coins: 0 },
-        { keywords: ['verbandszellen'], credits: 100000, coins: 0 },
-        { keywords: ['feuerwehrschule', 'thw bundesschule', 'polizeisschule', 'rettungsschule', 'schule für seefahrt und seenotrettung'], credits: 500000, coins: 50 },
-        { keywords: ['schnelleinsatzgruppe (seg)'], credits: 100000, coins: 30 }
-    ];
+    const STATIC_COSTS = [];
     const LSS_MB = {
         state: {
             markers: [],
@@ -133,7 +129,6 @@
 
                 this.state.buildingsData = list;
                 log('Wachentypen geladen (komplexe entfernt):', this.state.buildingsData);
-                this.ui.createBuildRow();
             })
                 .catch(err => {
                 log('Fehler beim Laden von Wachentypen:', err);
@@ -235,7 +230,8 @@
                     startVehicle: null,
                     hospitalMode: 'own',
                     schoolMode: 'own',
-                    bereitschaftsraumMode: 'own'
+                    bereitschaftsraumMode: 'own',
+                    namePrefix: ''
                 };
 
                 log('Globale Defaults beim Öffnen zurückgesetzt');
@@ -253,15 +249,32 @@
                     log('UI Container wieder sichtbar gemacht');
                 }
 
-                // Alte globale Controls entfernen und neu erstellen
-                const old = document.getElementById('lss_mb_global_controls');
-                if (old) old.remove();
-                createGlobalControls();
-
                 // Gebäudedaten laden
                 if (!LSS_MB.state.buildingsData) {
                     await LSS_MB.fetchBuildings();
                 }
+
+                // Leitstellen laden
+                if (!LSS_MB.state.leitstellen) {
+                    log('api/buildings');
+                    const data = await fetch('/api/buildings').then(r => r.json());
+                    log('api/buildings');
+
+                    LSS_MB.state.leitstellen = data
+                        .filter(b => b.building_type === 7)
+                        .sort((a, b) =>
+                              a.caption.localeCompare(b.caption, 'de', {
+                        sensitivity: 'base'
+                    })
+                             );
+                }
+
+                // Alte globale Controls entfernen
+                const old = document.getElementById('lss_mb_global_controls');
+                if (old) old.remove();
+
+                // Jetzt erst erzeugen
+                createGlobalControls();
 
                 // Benutzerinformationen laden
                 try {
@@ -282,12 +295,12 @@
                     log('Fehler beim Laden der User-Building-Counts', e);
                 }
 
-                // Alte Marker und Reihen entfernen
-                this.clearBuildRows();
-
                 // Erste Baureihe erstellen
                 this.createBuildRow();
                 log('Erste Build-Reihe erzeugt');
+
+                this.clearBuildRows();
+                this.createBuildRow();
             },
             injectFocusFix() {
                 if (document.getElementById('lss_mb_focus_fix')) return;
@@ -367,7 +380,7 @@
                 titleWrapper.appendChild(header);
 
                 const description = document.createElement('small');
-                description.textContent = 'Plane und errichte mehrere Gebäude/Wachen in kurzer Zeit und mit wenigen Klicks.';
+                description.textContent = 'Verwalte deine Bauprojekte effizient an einem Ort. Plane komplette Bauvorhaben, errichte mehrere Gebäude oder Wachen gleichzeitig und profitiere von Bauvorlagen, globalen Einstellungen sowie weiteren Funktionen für einen schnellen und komfortablen Bau von Wachen und Gebäuden.';
                 Object.assign(description.style, {
                     fontSize: '16px',
                     color: '#666',
@@ -459,18 +472,19 @@
                 if (minimized) {
                     // ===== MINIMIEREN: Nach rechts verschieben =====
                     Object.assign(container.style, {
-                        width: '70px',
-                        height: '70px',
+                        width: '430px',
+                        height: 'auto',
                         left: 'auto',
                         right: '10px',
-                        maxHeight: 'auto',
-                        overflow: 'visible',
-                        padding: '0',
+                        maxHeight: '90vh',
+                        overflow: 'auto',
+                        padding: '10px',
                         flexDirection: 'column',
-                        justifyContent: 'center',
-                        alignItems: 'center',
-                        gap: '0'
+                        justifyContent: 'flex-start',
+                        alignItems: 'stretch',
+                        gap: '8px'
                     });
+                    this.setCompactRowsMode(true);
 
                     // Header verstecken
                     if (headerContainer) {
@@ -481,11 +495,18 @@
                     const resDiv = document.getElementById('lss_mb_resources');
                     const rowsWrapper = document.getElementById('lss_mb_rows_wrapper');
                     const buttonsWrapper = document.getElementById('lss_mb_buttons_wrapper');
+                    const blueprintWrapper = document.getElementById('lss_mb_blueprint_wrapper');
                     const globalControls = document.getElementById('lss_mb_global_controls');
 
                     if (resDiv) resDiv.style.display = 'none';
-                    if (rowsWrapper) rowsWrapper.style.display = 'none';
+                    if (rowsWrapper) {
+                        rowsWrapper.style.display = 'flex';
+                        rowsWrapper.style.maxHeight = 'calc(90vh - 60px)';
+                        rowsWrapper.style.overflowY = 'auto';
+                        rowsWrapper.style.paddingRight = '0';
+                    }
                     if (buttonsWrapper) buttonsWrapper.style.display = 'none';
+                    if (blueprintWrapper) blueprintWrapper.style.display = 'none';
                     if (globalControls) globalControls.style.display = 'none';
 
                     // Minimize-Button-Clone anzeigen
@@ -493,8 +514,8 @@
                         minimizeBtnClone.textContent = '◀';
                         Object.assign(minimizeBtnClone.style, {
                             fontSize: '14px',
-                            width: '50px',
-                            height: '50px',
+                            width: '30px',
+                            height: '30px',
                             padding: '0',
                             margin: '0',
                             borderRadius: '6px',
@@ -535,11 +556,19 @@
                     const resDiv = document.getElementById('lss_mb_resources');
                     const rowsWrapper = document.getElementById('lss_mb_rows_wrapper');
                     const buttonsWrapper = document.getElementById('lss_mb_buttons_wrapper');
+                    const blueprintWrapper = document.getElementById('lss_mb_blueprint_wrapper');
                     const globalControls = document.getElementById('lss_mb_global_controls');
 
                     if (resDiv) resDiv.style.display = '';
-                    if (rowsWrapper) rowsWrapper.style.display = 'flex';
+                    if (rowsWrapper) {
+                        rowsWrapper.style.display = 'flex';
+                        rowsWrapper.style.maxHeight = '55vh';
+                        rowsWrapper.style.overflowY = 'auto';
+                        rowsWrapper.style.paddingRight = '6px';
+                    }
+                    this.setCompactRowsMode(false);
                     if (buttonsWrapper) buttonsWrapper.style.display = 'flex';
+                    if (blueprintWrapper) blueprintWrapper.style.display = 'flex';
                     if (globalControls) globalControls.style.display = 'flex';
 
                     // Minimize-Button-Clone verstecken
@@ -590,13 +619,166 @@
                 const rowsWrapper = document.getElementById('lss_mb_rows_wrapper');
                 const buttonsWrapper = document.getElementById('lss_mb_buttons_wrapper');
                 const globalControls = document.getElementById('lss_mb_global_controls');
+                const blueprintWrapper = document.getElementById('lss_mb_blueprint_wrapper');
                 const minimizeBtnClone = document.getElementById('lss_mb_minimize_btn_clone');
 
                 if (resDiv) resDiv.style.display = '';
-                if (rowsWrapper) rowsWrapper.style.display = 'flex';
+                if (rowsWrapper) {
+                    rowsWrapper.style.maxHeight = '55vh';
+                    rowsWrapper.style.overflowY = 'auto';
+                    rowsWrapper.style.paddingRight = '6px';
+                }
+
+                this.setCompactRowsMode(false);
                 if (buttonsWrapper) buttonsWrapper.style.display = 'flex';
                 if (globalControls) globalControls.style.display = 'flex';
+                if (blueprintWrapper) blueprintWrapper.style.display = 'flex';
                 if (minimizeBtnClone) minimizeBtnClone.style.display = 'none';
+            },
+            setRowCompactMode(rowState, compact) {
+                if (!rowState?.ui) return;
+                const {
+                    rowLabel,
+                    buildingSelect,
+                    hospitalModeSelect,
+                    schoolModeSelect,
+                    bereitstellungsraumModeSelect,
+                    numberLabel,
+                    creditsLabel,
+                    coinsLabel,
+                    addressInput,
+                    nameInput,
+                    lstSelect,
+                    vehicleSelect,
+                    markerBtn,
+                    deleteBtn,
+                    statusLabel
+                } = rowState.ui;
+
+                if (compact) {
+                    // Kompakte Seitenansicht
+                    rowState.el.style.flexWrap = 'wrap';
+                    rowState.el.style.alignItems = 'center';
+                    rowState.el.style.gap = '6px';
+                    // Ausblenden was in der Kompaktansicht nicht gebraucht wird
+                    [
+                        rowLabel,
+                        hospitalModeSelect,
+                        schoolModeSelect,
+                        bereitstellungsraumModeSelect,
+                        numberLabel,
+                        creditsLabel,
+                        coinsLabel,
+                        lstSelect,
+                        vehicleSelect,
+                        statusLabel
+                    ].forEach(el => {
+                        if (el) el.style.display = 'none';
+                    });
+                    // Wachentyp volle Breite
+                    if (buildingSelect) {
+                        buildingSelect.style.display = '';
+                        buildingSelect.style.flex = '1 1 100%';
+                        buildingSelect.style.minWidth = '0';
+                    }
+                    // Adresse volle Breite
+                    if (addressInput) {
+                        addressInput.style.display = '';
+                        addressInput.style.flex = '1 1 100%';
+                        addressInput.style.minWidth = '0';
+                    }
+                    // Name + Buttons in einer Zeile
+                    if (nameInput) {
+                        nameInput.style.display = '';
+                        nameInput.style.flex = '1 1 auto';
+                        nameInput.style.minWidth = '120px';
+                    }
+
+                    if (markerBtn) {
+                        markerBtn.style.display = '';
+                        markerBtn.style.flex = '0 0 auto';
+                    }
+
+                    if (deleteBtn) {
+                        deleteBtn.style.display = '';
+                        deleteBtn.style.flex = '0 0 auto';
+                    }
+                    return;
+                }
+
+                rowState.el.style.flexWrap = 'wrap';
+                rowState.el.style.alignItems = 'center';
+                rowState.el.style.gap = '10px';
+
+                if (rowLabel) rowLabel.style.display = '';
+                if (numberLabel) numberLabel.style.display = '';
+                if (creditsLabel) creditsLabel.style.display = '';
+                if (addressInput) {
+                    addressInput.style.display = '';
+                    addressInput.style.flex = '0 0 200px';
+                    addressInput.style.minWidth = '';
+                }
+                if (markerBtn) markerBtn.style.display = '';
+                if (deleteBtn) deleteBtn.style.display = '';
+                if (buildingSelect) {
+                    buildingSelect.style.display = '';
+                    buildingSelect.style.flex = '0 0 110px';
+                }
+                if (nameInput) {
+                    nameInput.style.display = '';
+                    nameInput.style.flex = '0 0 110px';
+                    nameInput.style.minWidth = '';
+                }
+                if (coinsLabel) {
+                    coinsLabel.style.display = HIDE_COINS_BUTTON ? 'none' : '';
+                }
+                if (statusLabel) {
+                    statusLabel.style.display =
+                        statusLabel.textContent.trim() ? 'block' : 'none';
+                }
+
+                const data = rowState.data || {};
+
+                if (hospitalModeSelect) {
+                    hospitalModeSelect.style.display =
+                        Number(data.buildingType) === 4 &&
+                        LSS_MB.state.alliance.canBuildAllianceHospital
+                        ? 'block'
+                    : 'none';
+                }
+
+                if (schoolModeSelect) {
+                    schoolModeSelect.style.display =
+                        ALLIANCE_SCHOOL_TYPES.has(Number(data.buildingType)) &&
+                        LSS_MB.state.alliance.canBuildAllianceHospital
+                        ? 'block'
+                    : 'none';
+                }
+
+                if (bereitstellungsraumModeSelect) {
+                    bereitstellungsraumModeSelect.style.display =
+                        Number(data.buildingType) === 14 &&
+                        LSS_MB.state.alliance.canBuildAllianceHospital
+                        ? 'block'
+                    : 'none';
+                }
+
+                if (lstSelect) {
+                    updateLeitstelleVisibility(data, lstSelect);
+                }
+
+                if (vehicleSelect) {
+                    const isFire =
+                          data.building?.caption?.toLowerCase().includes('feuerwache') &&
+                          vehicleSelect.options.length > 1;
+
+                    vehicleSelect.style.display = isFire ? 'block' : 'none';
+                }
+            },
+            setCompactRowsMode(compact) {
+                (LSS_MB.state.buildRows || []).forEach(row =>
+                                                       this.setRowCompactMode(row, compact)
+                                                      );
             },
             clearBuildRows() {
                 if (LSS_MB.state.buildRows?.length) {
@@ -976,6 +1158,14 @@
                 nameInput.addEventListener('input', () => {
                     rowState.data.name = nameInput.value;
                     updateMarkerLabel(rowState);
+
+                    const len = nameInput.value.trim().length;
+
+                    if (len > 40) {
+                        highlightField(nameInput, true);
+                    } else {
+                        highlightField(nameInput, false);
+                    }
                 });
 
                 const lstSelect = addField(document.createElement('select'));
@@ -983,28 +1173,16 @@
                 lstSelect.style.display = 'none';
                 lstSelect.addEventListener('change', () => rowState.data.leitstelle = lstSelect.value);
 
-                // Leitstellen laden
                 let lstSelectLoaded = false;
-                fetch('/api/buildings')
-                    .then(r => r.json())
-                    .then(data => {
-                    data
-                        .filter(b => b.building_type === 7)
-                        .sort((a, b) =>
-                              a.caption.localeCompare(b.caption, 'de', { sensitivity: 'base' })
-                             )
-                        .forEach(b => {
-                        const opt = document.createElement('option');
-                        opt.value = b.id;
-                        opt.textContent = b.caption;
-                        lstSelect.appendChild(opt);
-                    });
-                    lstSelectLoaded = true;
-                    log('Leitstellen alphabetisch sortiert geladen');
-                })
-                    .catch(e => {
-                    log('Fehler beim Laden von Leitstellen', e);
+
+                LSS_MB.state.leitstellen.forEach(b => {
+                    const opt = document.createElement('option');
+                    opt.value = b.id;
+                    opt.textContent = b.caption;
+                    lstSelect.appendChild(opt);
                 });
+
+                lstSelectLoaded = true;
 
                 const vehicleSelect = addField(document.createElement('select'));
                 vehicleSelect.style.display = 'none';
@@ -1026,9 +1204,7 @@
                 rowState.lstSelectLoaded = () => lstSelectLoaded;
 
                 const vehicleMapping = {
-                    "LF 20": 0, "LF 10": 1, "LF 8/6": 6, "LF 20/16": 7,
-                    "LF 10/6": 8, "LF 16-TS": 9, "LF-L": 107, "KLF": 88,
-                    "MLF": 89, "TSF-W": 37, "HLF 10": 90, "HLF 20": 30
+                    "HLF 20": 30
                 };
 
                 select.addEventListener('change', () => {
@@ -1082,73 +1258,18 @@
                 });
 
                 const markerBtn = addField(document.createElement('button'));
+                rowState.markerBtn = markerBtn;
                 markerBtn.className = BUTTON_CLASSES.primary;
                 markerBtn.textContent = 'Marker setzen';
-                markerBtn.addEventListener('click', () => {
-                    if (!LSS_MB.state.map) {
-                        log('Marker setzen: Map nicht verfügbar');
-                        return;
-                    }
-
-                    // Maker setzten
-                    if (!rowState.marker) {
-                        markerBtn.textContent = 'Marker löschen';
-                        markerBtn.className = BUTTON_CLASSES.danger;
-
-                        const c = LSS_MB.state.map.getCenter();
-
-                        // Marker erzeugen
-                        LSS_MB.mapApi.addMarker(c.lat, c.lng);
-                        const marker = LSS_MB.state.markers.at(-1);
-
-                        if (!marker) {
-                            alert('Marker konnte nicht gesetzt werden');
-                            return;
-                        }
-
-                        // Feste Kopplung
-                        rowState.marker = marker;
-                        marker._lssMbRow = rowState;
-
-                        // Label
-                        updateMarkerLabel(rowState);
-
-                        // Initiale Position
-                        const p = marker.getLatLng();
-                        rowState.data.lat = p.lat;
-                        rowState.data.lng = p.lng;
-
-                        // Drag synchronisiert NUR diese Row
-                        marker.on('dragend', () => {
-                            const p = marker.getLatLng();
-                            rowState.data.lat = p.lat;
-                            rowState.data.lng = p.lng;
-                        });
-
-                        log('Marker gesetzt für Reihe', rowLabel(rowState));
-                        return;
-                    }
-
-                    // Marker löschen
-                    LSS_MB.state.map.removeLayer(rowState.marker);
-                    LSS_MB.state.markers =
-                        LSS_MB.state.markers.filter(m => m !== rowState.marker);
-
-                    rowState.marker = null;
-
-                    markerBtn.textContent = 'Marker setzen';
-                    markerBtn.className = BUTTON_CLASSES.primary;
-
-                    log('Marker gelöscht für Reihe', rowState.id);
+                markerBtn.addEventListener("click", () => {
+                    toggleMarkerForRow(rowState);
                 });
 
                 const deleteBtn = addField(document.createElement('button'),'100px');
                 deleteBtn.className = BUTTON_CLASSES.danger;
                 deleteBtn.textContent = '🗑 Entfernen';
                 deleteBtn.addEventListener('click', () => {
-                    if (rowState.marker) {
-                        try { LSS_MB.state.map.removeLayer(rowState.marker); } catch {}
-                    }
+                    removeMarkerForRow(rowState);
 
                     LSS_MB.state.markers =
                         LSS_MB.state.markers.filter(m => m !== rowState.marker);
@@ -1177,14 +1298,106 @@
                 statusLabel.style.lineHeight = '26px';
                 statusLabel.style.fontWeight = 'bold';
 
+                if (LSS_MB.state.autoApplyGlobals) {
+                    applyGlobalsToRow(rowState);
+                }
                 // Referenz im Row-State speichern
                 rowState.statusEl = statusLabel;
+                // Referenzen für Kompaktansicht speichern
+                rowState.ui = {
+                    rowLabel,
+                    buildingSelect: select,
+                    hospitalModeSelect,
+                    schoolModeSelect,
+                    bereitstellungsraumModeSelect,
+                    numberLabel,
+                    creditsLabel,
+                    coinsLabel,
+                    addressInput,
+                    nameInput,
+                    lstSelect,
+                    vehicleSelect,
+                    markerBtn,
+                    deleteBtn,
+                    statusLabel
+                };
                 renumberBuildRows();
                 updateRowCountDisplay();
                 injectGlobalButtons();
             }
         },
     };
+
+    // Alles rund um den Maker
+    function createMarkerForRow(rowState, lat, lng) {
+        if (!LSS_MB.state.map) return;
+        if (rowState.marker) return;
+
+        LSS_MB.mapApi.addMarker(lat, lng);
+
+        const marker = LSS_MB.state.markers.at(-1);
+
+        if (!marker) {
+            log("Marker konnte nicht erstellt werden.");
+            return;
+        }
+
+        rowState.marker = marker;
+        marker._lssMbRow = rowState;
+
+        rowState.data.lat = lat;
+        rowState.data.lng = lng;
+
+        updateMarkerLabel(rowState);
+
+        marker.on("dragend", () => {
+            const p = marker.getLatLng();
+            rowState.data.lat = p.lat;
+            rowState.data.lng = p.lng;
+        });
+
+        if (rowState.markerBtn) {
+            rowState.markerBtn.textContent = "Marker löschen";
+            rowState.markerBtn.className = BUTTON_CLASSES.danger;
+        }
+
+        log("Marker erstellt:", rowState.id);
+    }
+    function removeMarkerForRow(rowState) {
+        if (!rowState.marker)
+            return;
+        try {
+            LSS_MB.state.map.removeLayer(rowState.marker);
+        } catch {}
+        LSS_MB.state.markers =
+            LSS_MB.state.markers.filter(m => m !== rowState.marker);
+
+        rowState.marker = null;
+        delete rowState.data.lat;
+        delete rowState.data.lng;
+
+        if (rowState.markerBtn) {
+            rowState.markerBtn.textContent = "Marker setzen";
+            rowState.markerBtn.className = BUTTON_CLASSES.primary;
+        }
+        log("Marker entfernt:", rowState.id);
+    }
+    function toggleMarkerForRow(rowState) {
+        if (!LSS_MB.state.map)
+            return;
+        if (!rowState.marker) {
+            const c = LSS_MB.state.map.getCenter();
+            createMarkerForRow(
+                rowState,
+                c.lat,
+                c.lng
+            );
+
+            return;
+        }
+
+        removeMarkerForRow(rowState);
+    }
 
     // 🔧 Styles einmalig hinzufügen
     (function injectSpinnerStyles() {
@@ -1281,7 +1494,6 @@
         try {
             const res = await fetch('/api/allianceinfo');
             const allianceData = await res.json();
-
             const currentUserId = Number(LSS_MB.state.userInfo?.user_id);
             if (!currentUserId) {
                 console.warn('[LSS-MB][ALLIANCE] Kein user_id verfügbar – Alliance-Check übersprungen');
@@ -1343,6 +1555,43 @@
             log('Buttons wrapper erstellt');
         }
 
+        // Wrapper für Bauplan-Zeile
+        let blueprintWrapper = document.getElementById('lss_mb_blueprint_wrapper');
+        if (!blueprintWrapper) {
+            blueprintWrapper = document.createElement('div');
+            blueprintWrapper.id = 'lss_mb_blueprint_wrapper';
+
+            Object.assign(blueprintWrapper.style, {
+                display: 'flex',
+                flexWrap: 'wrap',
+                gap: '10px',
+                marginTop: '8px',
+                width: '100%'
+            });
+
+            // ===== Baupläne-Label =====
+            if (!document.getElementById('lss_mb_blueprint_label')) {
+                const blueprintLabel = document.createElement('div');
+                blueprintLabel.id = 'lss_mb_blueprint_label';
+
+                const mode = document.body.classList.contains('dark') ? 'dark' : 'light';
+
+                Object.assign(blueprintLabel.style, {
+                    fontSize: '15px',
+                    fontWeight: 'bold',
+                    color: mode === 'dark' ? '#fff' : '#000',
+                    marginRight: '10px',
+                    display: 'flex',
+                    alignItems: 'center'
+                });
+
+                blueprintLabel.textContent = 'Baupläne';
+                blueprintWrapper.appendChild(blueprintLabel);
+            }
+
+            wrapper.parentNode.insertBefore(blueprintWrapper, wrapper.nextSibling);
+        }
+
         // ===== Reihen-Anzeige =====
         if (!document.getElementById('lss_mb_row_count')) {
             const rowCount = document.createElement('div');
@@ -1356,7 +1605,7 @@
                 display: 'flex',
                 alignItems: 'center'
             });
-            rowCount.textContent = 'Aktuelle Reihen: 0';
+            rowCount.textContent = 'Reihen: 0';
             wrapper.insertBefore(rowCount, wrapper.firstChild);
         }
 
@@ -1446,6 +1695,36 @@
             wrapper.appendChild(btn10);
         }
 
+        // +50 Reihen Button
+        if (!document.getElementById('lss_mb_add_20_rows_btn')) {
+            const btn20 = document.createElement('button');
+            btn20.id = 'lss_mb_add_20_rows_btn';
+            btn20.className = BUTTON_CLASSES.warning;
+            btn20.textContent = '+20 Reihen';
+            btn20.style.height = '30px';
+            btn20.style.padding = '0 12px';
+            btn20.addEventListener('click', () => {
+                log('+20 Reihen Button geklickt');
+                if (LSS_MB.state.applyBtn) LSS_MB.state.applyBtn.disabled = false;
+                const newRows = [];
+
+                for (let i = 0; i < 20; i++) {
+                    LSS_MB.ui.createBuildRow();
+                    const row = LSS_MB.state.buildRows.at(-1);
+                    if (row) newRows.push(row);
+                }
+
+                if (LSS_MB.state.autoApplyGlobals) {
+                    setTimeout(() => {
+                        newRows.forEach(row => applyGlobalsToRow(row));
+                    }, 0);
+                }
+
+                updateRowCountDisplay();
+            });
+            wrapper.appendChild(btn20);
+        }
+
         // Bauen mit Credits
         if (!document.getElementById('lss_mb_build_all_btn')) {
             const buildBtn = document.createElement('button');
@@ -1490,6 +1769,736 @@
             wrapper.appendChild(coinsBtn);
         }
 
+        // Bauplanbuttons
+        if (!document.getElementById('lss_mb_blueprint_select')) {
+            const select = document.createElement('select');
+            select.id = 'lss_mb_blueprint_select';
+            select.style.height = '30px';
+            select.style.minWidth = '220px';
+            blueprintWrapper.appendChild(select);
+
+            async function refreshBlueprints() {
+                const list = await LSS_MB.blueprints.getAll();
+                select.innerHTML =
+                    '<option value="">Bauplan auswählen</option>';
+                list.forEach(bp => {
+                    const opt = document.createElement('option');
+                    opt.value = bp.id;
+                    opt.textContent = bp.name;
+
+                    select.appendChild(opt);
+                });
+            }
+
+            refreshBlueprints();
+
+            // Speichern
+            const saveBtn = document.createElement('button');
+            saveBtn.className = BUTTON_CLASSES.success;
+            saveBtn.textContent = '💾 Speichern';
+            saveBtn.style.height = '30px';
+            saveBtn.addEventListener('click', async () => {
+                const name = await LSS_MB.dialog.prompt({
+                    title: 'Bauplan speichern',
+                    text: 'Bitte einen Namen für den Bauplan eingeben.',
+                    placeholder: 'z.B. Feuerwehr Innenstadt'
+                });
+
+                if (!name)
+                    return;
+
+                const bp = await LSS_MB.blueprints.save(name);
+
+                if (!bp)
+                    return;
+
+                await refreshBlueprints();
+                select.value = bp.id;
+
+                await LSS_MB.dialog.alert({
+                    title: 'Gespeichert',
+                    text: 'Der Bauplan wurde erfolgreich gespeichert.'
+                });
+            });
+
+            // Laden
+            const loadBtn = document.createElement('button');
+            loadBtn.className = BUTTON_CLASSES.primary;
+            loadBtn.textContent = '📂 Laden';
+            loadBtn.style.height = '30px';
+            loadBtn.addEventListener('click', async () => {
+
+                if (!select.value) {
+                    await LSS_MB.dialog.alert({
+                        title: 'Kein Bauplan',
+                        text: 'Bitte zuerst einen Bauplan auswählen.'
+                    });
+                    return;
+                }
+
+                const yes = await LSS_MB.dialog.confirm({
+                    title: 'Bauplan laden',
+                    text: 'Die aktuellen Reihen werden ersetzt.\nMöchtest du fortfahren?'
+                });
+
+                if (!yes)
+                    return;
+
+                await LSS_MB.blueprints.load(select.value);
+            });
+
+            // Überschreiben
+            const updateBtn = document.createElement('button');
+            updateBtn.className = BUTTON_CLASSES.info;
+            updateBtn.textContent = '🔄 Änderung speichern';
+            updateBtn.style.height = '30px';
+            updateBtn.addEventListener('click', async () => {
+
+                if (!select.value) {
+                    await LSS_MB.dialog.alert({
+                        title: 'Kein Bauplan',
+                        text: 'Bitte zuerst einen Bauplan auswählen.'
+                    });
+                    return;
+                }
+
+                const bp = await LSS_MB.blueprints.get(select.value);
+
+                if (!bp)
+                    return;
+
+                const yes = await LSS_MB.dialog.confirm({
+                    title: 'Bauplan aktualisieren',
+                    text: `Soll der Bauplan "${bp.name}" mit dem aktuellen Stand überschrieben werden?`
+                });
+
+                if (!yes)
+                    return;
+
+                const updated = await LSS_MB.blueprints.update(bp.id);
+
+                if (!updated)
+                    return;
+
+                await refreshBlueprints();
+                select.value = bp.id;
+
+                await LSS_MB.dialog.alert({
+                    title: 'Aktualisiert',
+                    text: `"${bp.name}" wurde erfolgreich aktualisiert.`
+                });
+
+            });
+
+            // Umbenennen
+            const renameBtn = document.createElement('button');
+            renameBtn.className = BUTTON_CLASSES.warning;
+            renameBtn.textContent = '✏ Umbenennen';
+            renameBtn.style.height = '30px';
+            renameBtn.addEventListener('click', async () => {
+
+                if (!select.value)
+                    return;
+
+                const bp = await LSS_MB.blueprints.get(select.value);
+
+                if (!bp)
+                    return;
+
+                const name = await LSS_MB.dialog.prompt({
+                    title: 'Bauplan umbenennen',
+                    value: bp.name
+                });
+
+                if (!name)
+                    return;
+
+                const renamed = await LSS_MB.blueprints.rename(bp.id, name);
+
+                if (!renamed)
+                    return;
+
+                await refreshBlueprints();
+                select.value = bp.id;
+            });
+
+            // Löschen
+            const deleteBtn = document.createElement('button');
+            deleteBtn.className = BUTTON_CLASSES.danger;
+            deleteBtn.textContent = '🗑 Löschen';
+            deleteBtn.style.height = '30px';
+            deleteBtn.addEventListener('click', async () => {
+
+                if (!select.value)
+                    return;
+
+                const bp = await LSS_MB.blueprints.get(select.value);
+
+                if (!bp)
+                    return;
+
+                const yes = await LSS_MB.dialog.confirm({
+                    title: 'Bauplan löschen',
+                    text: `Soll "${bp.name}" wirklich gelöscht werden?`
+                });
+
+                if (!yes)
+                    return;
+
+                await LSS_MB.blueprints.remove(bp.id);
+
+                await refreshBlueprints();
+
+                await LSS_MB.dialog.alert({
+                    title: 'Gelöscht',
+                    text: 'Der Bauplan wurde gelöscht.'
+                });
+
+            });
+
+            // Export
+            const exportBtn = document.createElement('button');
+            exportBtn.className = BUTTON_CLASSES.primary;
+            exportBtn.textContent = '📤 Export';
+            exportBtn.style.height = '30px';
+            exportBtn.addEventListener('click', async () => {
+                if (!select.value) return;
+                await LSS_MB.blueprints.exportBlueprint(select.value);
+            });
+
+            // Import
+            const importBtn = document.createElement('button');
+            importBtn.className = BUTTON_CLASSES.primary;
+            importBtn.textContent = '📥 Import';
+            importBtn.style.height = '30px';
+
+            const fileInput = document.createElement('input');
+            fileInput.type = 'file';
+            fileInput.accept = '.json';
+            fileInput.style.display = 'none';
+
+            importBtn.addEventListener('click', () => {
+                fileInput.value = ''; // gleiche Datei erneut auswählbar
+                fileInput.click();
+            });
+
+            fileInput.addEventListener('change', async () => {
+                if (!fileInput.files.length) return;
+
+                const bp = await LSS_MB.blueprints.importBlueprint(fileInput.files[0]);
+
+                if (!bp) return;
+
+                await refreshBlueprints();
+                select.value = bp.id;
+
+                await LSS_MB.dialog.alert({
+                    title: 'Import abgeschlossen',
+                    text: `"${bp.name}" wurde importiert.`
+                });
+            });
+
+            blueprintWrapper.appendChild(saveBtn);
+            blueprintWrapper.appendChild(loadBtn);
+            blueprintWrapper.appendChild(updateBtn);
+            blueprintWrapper.appendChild(renameBtn);
+            blueprintWrapper.appendChild(deleteBtn);
+            blueprintWrapper.appendChild(exportBtn);
+            blueprintWrapper.appendChild(importBtn);
+            blueprintWrapper.appendChild(fileInput);
+        }
+
+        // Gebäude/Wachen berechnen
+        if (!document.getElementById('lss_mb_blueprint_generate_budget')) {
+            const genBtn = document.createElement('button');
+            genBtn.id = 'lss_mb_blueprint_generate_budget';
+            genBtn.className = BUTTON_CLASSES.warning;
+            genBtn.textContent = 'Kaufkraft berechnen';
+            genBtn.style.height = '30px';
+            genBtn.style.padding = '0 12px';
+
+            // UI erzeugen
+            function showBudgetModal() {
+                return new Promise(resolve => {
+                    const overlay = document.createElement('div');
+                    Object.assign(overlay.style, {
+                        position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)',
+                        display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000000
+                    });
+
+                    const box = document.createElement('div');
+                    Object.assign(box.style, {
+                        width: '520px', maxWidth: '95%', padding: '14px', borderRadius: '8px',
+                        background: document.body.classList.contains('dark') ? '#2f2f2f' : '#fff',
+                        color: document.body.classList.contains('dark') ? '#fff' : '#000',
+                        boxShadow: '0 6px 30px rgba(0,0,0,0.4)', boxSizing: 'border-box'
+                    });
+
+                    const title = document.createElement('h4');
+                    title.textContent = 'Kaufkraft berechnen';
+                    title.style.marginTop = '0';
+                    box.appendChild(title);
+
+                    function row(labelText, el) {
+                        const wrap = document.createElement('div');
+                        wrap.style.display = 'flex';
+                        wrap.style.alignItems = 'center';
+                        wrap.style.gap = '8px';
+                        wrap.style.marginBottom = '8px';
+
+                        const lbl = document.createElement('div');
+                        lbl.textContent = labelText;
+                        lbl.style.width = '140px';
+                        lbl.style.fontSize = '13px';
+                        wrap.appendChild(lbl);
+                        el.style.flex = '1';
+                        wrap.appendChild(el);
+                        return wrap;
+                    }
+
+                    const modeSelect = document.createElement('select');
+                    ['own', 'alliance'].forEach(v => {
+                        const o = document.createElement('option');
+                        o.value = v;
+                        o.textContent = v === 'own' ? 'Eigenes Konto (Credits / Coins)' : 'Verband (nur Credits)';
+                        modeSelect.appendChild(o);
+                    });
+
+                    const typeSelect = document.createElement('select');
+                    const buildings = Array.isArray(LSS_MB.state.buildingsData) ? LSS_MB.state.buildingsData : [];
+                    const sorted = buildings.slice().sort((a,b) => (a.caption||'').localeCompare(b.caption||'', 'de', {sensitivity:'base'}));
+                    const ph = document.createElement('option'); ph.value=''; ph.textContent = '— Gebäudetyp wählen —'; ph.disabled = true; ph.selected = true;
+                    typeSelect.appendChild(ph);
+                    sorted.forEach(b => {
+                        const opt = document.createElement('option');
+                        opt.value = String(b.building_type);
+                        opt.textContent = `${b.caption} (${b.building_type})`;
+                        typeSelect.appendChild(opt);
+                    });
+
+                    const allTypeOptions = Array.from(typeSelect.options).map(o => ({ value: o.value, text: o.textContent, disabled: o.disabled }));
+
+                    function applyTypeFilterForMode(mode) {
+                        if (mode === 'alliance') {
+                            const allowed = new Set(['4', '16']); // nur Krankenhaus + Verbandszellen
+                            // placeholder zurücksetzen (sofern vorhanden)
+                            const placeholder = allTypeOptions.find(o => o.value === '');
+                            typeSelect.innerHTML = '';
+                            if (placeholder) {
+                                const opt = document.createElement('option');
+                                opt.value = placeholder.value;
+                                opt.textContent = placeholder.text;
+                                opt.disabled = true;
+                                opt.selected = true;
+                                typeSelect.appendChild(opt);
+                            }
+                            allTypeOptions.forEach(o => {
+                                if (!o.value) return;
+                                if (allowed.has(o.value)) {
+                                    const opt = document.createElement('option');
+                                    opt.value = o.value;
+                                    opt.textContent = o.text;
+                                    typeSelect.appendChild(opt);
+                                }
+                            });
+                        } else {
+                            // komplette Liste wiederherstellen
+                            typeSelect.innerHTML = '';
+                            allTypeOptions.forEach(o => {
+                                const opt = document.createElement('option');
+                                opt.value = o.value;
+                                opt.textContent = o.text;
+                                if (o.disabled) opt.disabled = true;
+                                if (o.value === '') opt.selected = true;
+                                typeSelect.appendChild(opt);
+                            });
+                        }
+                    }
+
+                    const allianceOption = Array.from(modeSelect.options).find(o => o.value === 'alliance');
+                    if (allianceOption && !LSS_MB.state.alliance?.canBuildAllianceHospital) {
+                        allianceOption.disabled = true;
+                        if (modeSelect.value === 'alliance') modeSelect.value = 'own';
+                    }
+
+                    modeSelect.addEventListener('change', () => {
+                        applyTypeFilterForMode(modeSelect.value);
+                        // setDefaultBudget sollte bereits definiert sein
+                        if (typeof setDefaultBudget === 'function') setDefaultBudget(modeSelect.value);
+                    });
+
+                    applyTypeFilterForMode(modeSelect.value);
+
+                    const currencyWrap = document.createElement('div');
+                    currencyWrap.style.display = 'flex';
+                    currencyWrap.style.gap = '8px';
+                    const rCredits = document.createElement('input'); rCredits.type = 'radio'; rCredits.name = 'lss_mb_currency'; rCredits.value = 'credits'; rCredits.id = 'lss_mb_currency_credits';
+                    const lCredits = document.createElement('label'); lCredits.htmlFor = rCredits.id; lCredits.textContent = 'Credits';
+                    const rCoins = document.createElement('input'); rCoins.type = 'radio'; rCoins.name = 'lss_mb_currency'; rCoins.value = 'coins'; rCoins.id = 'lss_mb_currency_coins';
+                    const lCoins = document.createElement('label'); lCoins.htmlFor = rCoins.id; lCoins.textContent = 'Coins';
+                    currencyWrap.append(rCredits, lCredits, rCoins, lCoins);
+
+                    const budgetInput = document.createElement('input');
+                    budgetInput.type = 'text';
+                    budgetInput.inputMode = 'numeric';
+                    budgetInput.autocomplete = 'off';
+                    budgetInput.style.padding = '6px';
+
+                    // Deutsche Zahlenformatierung
+                    const formatNumber = value =>
+                    Number(value || 0).toLocaleString('de-DE');
+
+                    const parseNumber = value =>
+                    Number(String(value).replace(/\./g, '').replace(',', '.'));
+
+                    budgetInput.addEventListener('input', () => {
+                        const cursor = budgetInput.selectionStart;
+                        const digits = budgetInput.value.replace(/\D/g, '');
+
+                        budgetInput.value = digits ? formatNumber(digits) : '';
+
+                        // Cursor ans Ende setzen (einfachste Variante)
+                        requestAnimationFrame(() => {
+                            budgetInput.setSelectionRange(
+                                budgetInput.value.length,
+                                budgetInput.value.length
+                            );
+                        });
+                    });
+
+                    const info = document.createElement('div');
+                    info.style.marginTop = '8px';
+                    info.style.fontSize = '13px';
+
+                    const footer = document.createElement('div');
+                    footer.style.display = 'flex';
+                    footer.style.justifyContent = 'flex-end';
+                    footer.style.gap = '8px';
+                    footer.style.marginTop = '12px';
+
+                    const estimateBtn = document.createElement('button'); estimateBtn.className = BUTTON_CLASSES.info; estimateBtn.textContent = 'Schätzen';
+                    const createBtn = document.createElement('button'); createBtn.className = BUTTON_CLASSES.success; createBtn.textContent = 'Erzeugen'; createBtn.disabled = true;
+                    const cancelBtn = document.createElement('button'); cancelBtn.className = BUTTON_CLASSES.danger; cancelBtn.textContent = 'Abbrechen';
+
+                    footer.append(estimateBtn, createBtn, cancelBtn);
+
+                    box.appendChild(row('Modus', modeSelect));
+                    box.appendChild(row('Gebäudetyp', typeSelect));
+                    box.appendChild(row('Währung', currencyWrap));
+                    box.appendChild(row('Budget', budgetInput));
+                    box.appendChild(info);
+                    box.appendChild(footer);
+                    overlay.appendChild(box);
+                    document.body.appendChild(overlay);
+
+                    // Prefill budget values
+                    function setDefaultBudget(mode) {
+                        if (mode === 'alliance') {
+                            const credits = Number(LSS_MB.state.alliance?.credits) || 0;
+
+                            budgetInput.value = formatNumber(credits);
+                            budgetInput.dataset.credits = credits;
+                            budgetInput.dataset.coins = 0;
+
+                            rCredits.checked = true;
+                            rCoins.disabled = true;
+                        } else {
+                            const credits = Number(LSS_MB.state.userInfo?.credits_user_current) || 0;
+                            const coins = Number(LSS_MB.state.userInfo?.coins_user_current) || 0;
+
+                            budgetInput.value = formatNumber(credits);
+
+                            budgetInput.dataset.credits = credits;
+                            budgetInput.dataset.coins = coins;
+
+                            rCredits.checked = true;
+                            rCoins.disabled = false;
+                        }
+                    }
+
+                    setDefaultBudget(modeSelect.value);
+                    modeSelect.addEventListener('change', () => setDefaultBudget(modeSelect.value));
+                    rCredits.addEventListener('change', () => {
+                        if (rCredits.checked) {
+                            budgetInput.value = formatNumber(budgetInput.dataset.credits);
+                        }
+                    });
+
+                    rCoins.addEventListener('change', () => {
+                        if (rCoins.checked) {
+                            budgetInput.value = formatNumber(budgetInput.dataset.coins);
+                        }
+                    });
+
+                    cancelBtn.addEventListener('click', () => { overlay.remove(); resolve(null); });
+
+                    // Estimator (async)
+                    async function runEstimate(typeId, mode, currency, budgetVal) {
+                        if (Number.isNaN(typeId)) {
+                            return { count: 0, spent: 0 };
+                        }
+                        // local snapshot of user buildings
+                        const orig = { ...(LSS_MB.state.userBuildings || {}) };
+                        const local = {};
+                        Object.keys(orig).forEach(k => local[k] = Number(orig[k] || 0));
+                        // ensure keys
+                        [0,18,6,19,9,25,26].forEach(k => local[k] = local[k] || 0);
+
+                        const existingServerFireTotal = (orig[0] || 0) + (orig[18] || 0);
+                        const existingServerPoliceTotal = (orig[6] || 0) + (orig[19] || 0);
+
+                        const serverPrices = {};
+
+                        async function serverPrice(tid) {
+                            if (serverPrices[tid]) return serverPrices[tid];
+                            const b = buildings.find(x => Number(x.building_type) === Number(tid));
+                            const p = b ? await getCostsForBuilding(b) : { credits: 0, coins: 0 };
+                            serverPrices[tid] = p || { credits: 0, coins: 0 };
+                            return serverPrices[tid];
+                        }
+
+                        let simulatedFireTotal = local[0] + local[18];
+                        let simulatedPoliceTotal = local[6] + local[19];
+
+                        let spent = 0;
+                        let count = 0;
+                        const MAX = 2000;
+
+                        for (let i=0; i<MAX; i++) {
+                            // compute next cost depending on type
+                            let next = { credits: 0, coins: 0 };
+                            if (typeId === 0) {
+                                const srv = await serverPrice(0);
+                                const after = simulatedFireTotal + 1;
+                                if (after === existingServerFireTotal + 1) next = { credits: srv.credits || 0, coins: srv.coins || 0 };
+                                else {
+                                    const anchor = existingServerFireTotal + 1;
+                                    const anchorCalc = calcFireStationCost(anchor);
+                                    const scale = anchorCalc>0 ? (srv.credits||0)/anchorCalc : 1;
+                                    next.credits = Math.round(calcFireStationCost(after) * (scale || 1));
+                                    next.coins = srv.coins || 0;
+                                }
+                            } else if (typeId === 18) {
+                                const srv = await serverPrice(18);
+                                const after = simulatedFireTotal + 1;
+                                if (after === existingServerFireTotal + 1) next = { credits: Math.min(srv.credits||0, FIRE_STATION_SMALL_CREDIT_CAP), coins: srv.coins || 0 };
+                                else {
+                                    const anchor = existingServerFireTotal + 1;
+                                    const anchorCalc = calcSmallFireStationCost(anchor);
+                                    const scale = anchorCalc>0 ? (srv.credits||0)/anchorCalc : 1;
+                                    next.credits = Math.min(Math.round(calcSmallFireStationCost(after) * (scale || 1)), FIRE_STATION_SMALL_CREDIT_CAP);
+                                    next.coins = srv.coins || 0;
+                                }
+                            } else if (typeId === 6) {
+                                const srv = await serverPrice(6);
+                                const after = simulatedPoliceTotal + 1;
+                                if (after === existingServerPoliceTotal + 1) next = { credits: srv.credits || 0, coins: srv.coins || 0 };
+                                else {
+                                    const anchor = existingServerPoliceTotal + 1;
+                                    const anchorCalc = calcPoliceStationCost(anchor);
+                                    const scale = anchorCalc>0 ? (srv.credits||0)/anchorCalc : 1;
+                                    next.credits = Math.round(calcPoliceStationCost(after) * (scale || 1));
+                                    next.coins = srv.coins || 0;
+                                }
+                            } else if (typeId === 19) {
+                                const srv = await serverPrice(19);
+                                const after = simulatedPoliceTotal + 1;
+                                if (after === existingServerPoliceTotal + 1) next = { credits: srv.credits || 0, coins: srv.coins || 0 };
+                                else {
+                                    const anchor = existingServerPoliceTotal + 1;
+                                    const anchorCalc = calcSmallPoliceStationCost(anchor);
+                                    const scale = anchorCalc>0 ? (srv.credits||0)/anchorCalc : 1;
+                                    next.credits = Math.round(calcSmallPoliceStationCost(after) * (scale || 1));
+                                    next.coins = srv.coins || 0;
+                                }
+                            } else if (typeId === 9) {
+                                const srv = await serverPrice(9);
+                                const after = (local[9] || 0) + 1;
+                                next.credits = Math.round(calcTHWCost(after) * ((srv.credits && calcTHWCost(1)) ? (srv.credits / calcTHWCost(1)) : 1));
+                                next.coins = srv.coins || 35;
+                            } else if (typeId === 25 || typeId === 26) {
+                                const srv = await serverPrice(typeId);
+                                const after = (local[typeId] || 0) + 1;
+                                next.credits = calcRescueSpecialCost(after);
+                                next.coins = srv.coins || 0;
+                            } else {
+                                const srv = await serverPrice(typeId);
+                                next.credits = srv.credits || 0;
+                                next.coins = srv.coins || 0;
+                            }
+
+                            const cost = (currency === 'credits') ? Number(next.credits || 0) : Number(next.coins || 0);
+                            if (!isFinite(cost) || cost <= 0) break;
+                            if (spent + cost > budgetVal) break;
+
+                            // accept
+                            spent += cost;
+                            count++;
+
+                            // advance local counters
+                            if (typeId === 0) { local[0] = (local[0]||0)+1; simulatedFireTotal++; }
+                            else if (typeId === 18) { local[18] = (local[18]||0)+1; simulatedFireTotal++; }
+                            else if (typeId === 6) { local[6] = (local[6]||0)+1; simulatedPoliceTotal++; }
+                            else if (typeId === 19) { local[19] = (local[19]||0)+1; simulatedPoliceTotal++; }
+                            else { local[typeId] = (local[typeId]||0)+1; }
+                        }
+
+                        return { count, spent };
+                    }
+
+                    // Estimate button handler
+                    estimateBtn.addEventListener('click', async () => {
+                        info.textContent = '';
+                        createBtn.disabled = true;
+
+                        const chosenType = Number(typeSelect.value);
+
+                        if (typeSelect.value === '') {
+                            info.innerHTML = '<span style="color:#a40000">Bitte Gebäudetyp wählen.</span>';
+                            return;
+                        }
+
+                        const mode = modeSelect.value;
+                        // Defensive check: falls der Nutzer während der Modal-Session Rechte verloren hat
+                        if (mode === 'alliance' && !LSS_MB.state.alliance?.canBuildAllianceHospital) {
+                            info.innerHTML = '<span style="color:#a40000">Du hast keine Berechtigung für Verbandsbauten.</span>';
+                            return;
+                        }
+
+                        const currency = rCoins.checked ? 'coins' : 'credits';
+                        const budgetVal = parseNumber(budgetInput.value);
+
+                        if (budgetVal <= 0) {
+                            info.innerHTML = '<span style="color:#a40000">Bitte ein gültiges Budget eingeben.</span>';
+                            return;
+                        }
+
+                        info.textContent = 'Schätzung läuft…';
+                        estimateBtn.disabled = true;
+                        try {
+                            const res = await runEstimate(chosenType, mode, currency, budgetVal);
+                            if (!res || res.count <= 0) {
+                                info.innerHTML = `<span style="color:#FF0000">Mit diesem Budget können keine Gebäude erzeugt werden.</span>`;
+                                createBtn.disabled = true;
+                            } else {
+                                info.innerHTML = `<strong>Geschätzt:</strong> ${res.count} Stück — Kosten: ${res.spent.toLocaleString('de-DE')} ${currency}.`;
+                                createBtn.disabled = false;
+                                createBtn.dataset.estimateCount = String(res.count);
+                                createBtn.dataset.estimateSpent = String(res.spent);
+                            }
+                        } catch (e) {
+                            console.error('Estimate Fehler', e);
+                            info.innerHTML = `<span style="color:#a40000">Fehler bei der Schätzung.</span>`;
+                            createBtn.disabled = true;
+                        } finally {
+                            estimateBtn.disabled = false;
+                        }
+                    });
+
+                    // Create button handler
+                    createBtn.addEventListener('click', async () => {
+                        try {
+                            const c = Math.max(0, Number(createBtn.dataset.estimateCount || 0));
+                            const chosenType = Number(typeSelect.value);
+                            const mode = modeSelect.value;
+
+                            if (typeSelect.value === '' || c <= 0) {
+                                await LSS_MB.dialog.alert({
+                                    title: 'Fehler',
+                                    text: 'Keine gültige Anzahl oder kein Gebäudetyp ausgewählt.'
+                                });
+                                return;
+                            }
+
+                            // Verbandsprüfungen (defensiv)
+                            if (mode === 'alliance') {
+                                const supportsAlliance = (chosenType === 4) || (chosenType === 16) || ALLIANCE_SCHOOL_TYPES.has(chosenType);
+                                if (!LSS_MB.state.alliance?.canBuildAllianceHospital) {
+                                    await LSS_MB.dialog.alert({ title: 'Keine Berechtigung', text: 'Du darfst keine Verbandsgebäude bauen.' });
+                                    return;
+                                }
+                                if (!supportsAlliance) {
+                                    await LSS_MB.dialog.alert({ title: 'Nicht möglich', text: 'Der gewählte Gebäudetyp kann nicht als Verbandsgebäude gebaut werden.' });
+                                    return;
+                                }
+                            }
+
+                            // Sicherheitslimit: wenn sehr viele Reihen erzeugt werden sollen, nochmal bestätigen
+                            const SAFETY_LIMIT = 50;
+                            if (c > SAFETY_LIMIT) {
+                                const ok = await LSS_MB.dialog.confirm({
+                                    title: 'Viele Reihen erzeugen',
+                                    text: `Du willst ${c} Reihen erzeugen. Das kann lange dauern. Wirklich fortfahren?`
+                                });
+                                if (!ok) return;
+                            }
+
+                            // Erzeuge Reihen
+                            const created = [];
+                            for (let i = 0; i < c; i++) {
+                                LSS_MB.ui.createBuildRow();
+                                const row = LSS_MB.state.buildRows.at(-1);
+                                if (!row) continue;
+
+                                // setze interne Daten & UI selects
+                                row.data.buildingType = String(chosenType);
+                                const buildingObj = buildings.find(b => Number(b.building_type) === chosenType);
+                                if (buildingObj) row.data.building = buildingObj;
+
+                                const s = row.selects;
+                                if (s && s.building) {
+                                    s.building.value = String(chosenType);
+                                    s.building.dispatchEvent(new Event('change', { bubbles: true }));
+                                }
+
+                                // falls Verbandsmodus gewählt: setze die passenden Mode-Selects (falls vorhanden)
+                                if (mode === 'alliance' && s) {
+                                    // leichte Verzögerung wäre hier robust, aber meist nicht nötig
+                                    if (s.hospitalMode) { s.hospitalMode.value = 'alliance'; s.hospitalMode.dispatchEvent(new Event('change')); }
+                                    if (s.schoolMode)   { s.schoolMode.value = 'alliance';   s.schoolMode.dispatchEvent(new Event('change')); }
+                                    if (s.bereitstellungsraum) { s.bereitstellungsraum.value = 'alliance'; s.bereitstellungsraum.dispatchEvent(new Event('change')); }
+                                }
+
+                                // Mindestname setzen, damit validateRow später nicht meckert
+                                const nameInput = row.el?.querySelector('input[placeholder="Name (max 40 Zeichen)"]');
+                                const caption = (buildingObj && buildingObj.caption) ? buildingObj.caption : `Gebäude ${chosenType}`;
+                                const name = `${caption} ${row.visualIndex || row.id}`;
+                                if (nameInput) {
+                                    nameInput.value = name;
+                                }
+                                row.data.name = name;
+
+                                created.push(row);
+                            }
+
+                            // UI Aktualisierungen
+                            renumberBuildRows();
+                            updateRowCountDisplay();
+                            try { await updateCostPreview(); } catch (e) { log('updateCostPreview Fehler nach Erzeugung', e); }
+
+                            // Close modal / overlay und resolve
+                            overlay.remove();
+                            resolve({ created: created.length });
+                        } catch (e) {
+                            console.error('createBtn Fehler', e);
+                            await LSS_MB.dialog.alert({ title: 'Fehler', text: 'Beim Erzeugen der Reihen ist ein Fehler aufgetreten.' });
+                        }
+                    });});
+            }
+
+            // Attach handler
+            genBtn.addEventListener('click', async () => {
+                if (!Array.isArray(LSS_MB.state.buildingsData) || LSS_MB.state.buildingsData.length === 0) {
+                    await LSS_MB.fetchBuildings();
+                }
+                await showBudgetModal();
+            });
+
+            // append the button near blueprint controls
+            const bpWrap = document.getElementById('lss_mb_blueprint_wrapper') || document.getElementById('lss_mb_buttons_wrapper');
+            if (bpWrap) bpWrap.appendChild(genBtn);
+        }
+        // === END: Auto-Generieren (Budget) ===
         updateBuildAllButtonState();
         createGlobalControls();
     }
@@ -1595,7 +2604,14 @@
         globalBereitsstellungsraumMode.style.display = 'none';
         globalBereitsstellungsraumMode.innerHTML = `<option value="own">Eigener</option><option value="alliance">Verband</option>`;
 
-        wrap.append(globalBuilding, globalHospitalMode, globalSchoolMode, globalBereitsstellungsraumMode, globalLST, globalVehicle);
+        const globalNamePrefix = styleField(document.createElement('input'), '220px');
+        globalNamePrefix.type = 'text';
+        globalNamePrefix.placeholder = 'Namenspräfix (z.B. BY > THW )';
+        globalNamePrefix.addEventListener('input', () => {
+            LSS_MB.state.globalDefaults.namePrefix = globalNamePrefix.value;
+        });
+
+        wrap.append(globalBuilding, globalHospitalMode, globalSchoolMode, globalBereitsstellungsraumMode, globalNamePrefix, globalLST, globalVehicle, );
 
         // ===== Gebäude laden =====
         let buildings = LSS_MB.state.buildingsData;
@@ -1620,19 +2636,11 @@
             globalBuilding.appendChild(opt);
         });
 
-        // ===== Leitstellen laden =====
-        fetch('/api/buildings')
-            .then(r => r.json())
-            .then(data => {
-            data.filter(b => b.building_type === 7)
-                .sort((a, b) => a.caption.localeCompare(b.caption, 'de', { sensitivity: 'base' }))
-                .forEach(b => {
-                const opt = document.createElement('option');
-                opt.value = b.id;
-                opt.textContent = b.caption;
-                globalLST.appendChild(opt);
-            });
-            log('Globale Leitstellen geladen');
+        LSS_MB.state.leitstellen.forEach(b => {
+            const opt = document.createElement('option');
+            opt.value = b.id;
+            opt.textContent = b.caption;
+            globalLST.appendChild(opt);
         });
 
         // ===== Fahrzeuge laden =====
@@ -1753,7 +2761,8 @@
                 startVehicle: null,
                 hospitalMode: 'own',
                 schoolMode: 'own',
-                bereitschaftsraumMode: 'own'
+                bereitschaftsraumMode: 'own',
+                namePrefix: ''
             };
 
             // Globale Inputs zurücksetzen
@@ -1763,6 +2772,7 @@
             globalHospitalMode.value = 'own';
             globalSchoolMode.value = 'own';
             globalBereitsstellungsraumMode.value = 'own';
+            globalNamePrefix.value = '';
 
             globalHospitalMode.style.display = 'none';
             globalSchoolMode.style.display = 'none';
@@ -1784,7 +2794,13 @@
 
         wrap.appendChild(deleteAllBtn);
 
-        buttonsWrapper.parentNode.insertBefore(wrap, buttonsWrapper.nextSibling);
+        const blueprintWrapper = document.getElementById('lss_mb_blueprint_wrapper');
+
+        if (blueprintWrapper) {
+            blueprintWrapper.parentNode.insertBefore(wrap, blueprintWrapper.nextSibling);
+        } else {
+            buttonsWrapper.parentNode.insertBefore(wrap, buttonsWrapper.nextSibling);
+        }
         LSS_MB.state.globalControlsWrap = wrap;
 
         updateBuildAllButtonState();
@@ -1848,30 +2864,22 @@
             }, 100);
         }
 
+        // 5️⃣ Namenspräfix setzen
+        if (rowState.ui?.nameInput && defs.namePrefix !== undefined) {
+            rowState.ui.nameInput.value = defs.namePrefix;
+            rowState.data.name = defs.namePrefix;
+            rowState.ui.nameInput.dispatchEvent(new Event('input'));
+        }
+
         // 3️⃣ Leitstelle setzen
         if (s.leitstelle && defs.leitstelle) {
-            let retryCount = 0;
-            const applyLST = () => {
-                retryCount++;
-                const isLoaded = rowState.lstSelectLoaded?.() || false;
+            const hasOption = [...s.leitstelle.options]
+            .some(o => o.value == defs.leitstelle);
 
-                if (isLoaded) {
-                    const hasOption = [...s.leitstelle.options].some(o => o.value == defs.leitstelle);
-                    if (hasOption) {
-                        s.leitstelle.value = defs.leitstelle;
-                        s.leitstelle.dispatchEvent(new Event('change'));
-                        return;
-                    }
-                }
-
-                if (retryCount > 15) {
-                    return;
-                }
-
-                setTimeout(applyLST, 200);
-            };
-
-            setTimeout(applyLST, 100);
+            if (hasOption) {
+                s.leitstelle.value = defs.leitstelle;
+                s.leitstelle.dispatchEvent(new Event('change'));
+            }
         }
 
         // 4️⃣ Fahrzeug setzen
@@ -1907,7 +2915,7 @@
         if (!el) return;
 
         const count = LSS_MB.state.buildRows?.length || 0;
-        el.textContent = `Aktuelle Reihen: ${count}`;
+        el.textContent = `Reihen: ${count}`;
     }
 
     // Funktion um Leistellenauswahl anzuzeigen oder nicht
@@ -2099,6 +3107,7 @@
         const addBtn = document.getElementById('lss_mb_add_row_btn');
         const btn5 = document.getElementById('lss_mb_add_5_rows_btn');
         const btn10 = document.getElementById('lss_mb_add_10_rows_btn');
+        const btn20 = document.getElementById('lss_mb_add_20_rows_btn');
 
         if (btn5) {
             btn5.disabled = disabled || btn5.disabled;
@@ -2107,6 +3116,10 @@
         if (btn10) {
             btn10.disabled = disabled || btn10.disabled;
             btn10.style.opacity = disabled ? '0.5' : '';
+        }
+        if (btn20) {
+            btn20.disabled = disabled || btn20.disabled;
+            btn20.style.opacity = disabled ? '0.5' : '';
         }
         if (buildBtn) {
             buildBtn.disabled = disabled || buildBtn.disabled;
@@ -2520,6 +3533,42 @@
             }
         }
 
+        const helicopterLimits = getHelicopterLimitStatus();
+        const rowTypeId = Number(d.buildingType);
+
+        if (rowTypeId === HELICOPTER_LIMIT_TYPES.RTH.buildingType) {
+            if (helicopterLimits.rth.exceeded) {
+                errors.push(
+                    `RTH-Limit überschritten: ` +
+                    `${helicopterLimits.rth.total} von ` +
+                    `${helicopterLimits.rth.limit} erlaubt`
+                );
+                highlightField(typeSelect, true);
+            }
+        }
+
+        if (rowTypeId === HELICOPTER_LIMIT_TYPES.POLICE.buildingType) {
+            if (helicopterLimits.police.exceeded) {
+                errors.push(
+                    `Polizei-Hubschrauber-Limit überschritten: ` +
+                    `${helicopterLimits.police.total} von ` +
+                    `${helicopterLimits.police.limit} erlaubt`
+                );
+                highlightField(typeSelect, true);
+            }
+        }
+
+        if (rowTypeId === HELICOPTER_LIMIT_TYPES.SEA.buildingType) {
+            if (helicopterLimits.sea.exceeded) {
+                errors.push(
+                    `Seenotrettungs-Limit überschritten: ` +
+                    `${helicopterLimits.sea.totalHelicopterStations} von ` +
+                    `${helicopterLimits.sea.limit} erlaubt`
+                );
+                highlightField(typeSelect, true);
+            }
+        }
+
         if (d.building) {
             const typeId = Number(d.building.building_type);
 
@@ -2630,6 +3679,124 @@
         return Math.round(
             100_000 + (100_000 * (Math.log(count - 9) / Math.log(5)))
         );
+    }
+
+    // RTH / Pol-Heli / SNR-Schrauber
+    function getStandardHelicopterLimit(totalBuildings) {
+        totalBuildings = Number(totalBuildings) || 0;
+        if (totalBuildings < 125) {
+            return 4;
+        }
+        return 5 + Math.floor((totalBuildings - 125) / 25);
+    }
+    function getSeaHelicopterLimit(seaRescueStations) {
+        seaRescueStations = Number(seaRescueStations) || 0;
+        if (seaRescueStations < 15) {
+            return 2;
+        }
+        return 3 + Math.floor((seaRescueStations - 15) / 5);
+    }
+    function getHelicopterLimitStatus() {
+        const buildings = LSS_MB.state.userBuildings || {};
+
+        const totalBuildings =
+              Number(LSS_MB.state.userBuildingsTotal || 0);
+
+        const plannedCounts = {};
+        for (const row of LSS_MB.state.buildRows || []) {
+            const typeId = Number(row.data?.buildingType);
+
+            if (!typeId) {
+                continue;
+            }
+
+            plannedCounts[typeId] =
+                (plannedCounts[typeId] || 0) + 1;
+        }
+
+        const existingRTH =
+              Number(
+                  buildings[HELICOPTER_LIMIT_TYPES.RTH.buildingType] || 0
+              );
+
+        const plannedRTH =
+              Number(
+                  plannedCounts[HELICOPTER_LIMIT_TYPES.RTH.buildingType] || 0
+              );
+
+        const totalRTH =
+              existingRTH + plannedRTH;
+
+        const rthLimit =
+              getStandardHelicopterLimit(totalBuildings);
+
+        const existingPolice =
+              Number(
+                  buildings[HELICOPTER_LIMIT_TYPES.POLICE.buildingType] || 0
+              );
+
+        const plannedPolice =
+              Number(
+                  plannedCounts[HELICOPTER_LIMIT_TYPES.POLICE.buildingType] || 0
+              );
+
+        const totalPolice =
+              existingPolice + plannedPolice;
+
+        const policeLimit =
+              getStandardHelicopterLimit(totalBuildings);
+
+        // Typ 26 = Seenotrettungswache
+        const existingSeaRescue =
+              Number(buildings[26] || 0);
+
+        const plannedSeaRescue =
+              Number(plannedCounts[26] || 0);
+
+        const totalSeaRescue =
+              existingSeaRescue + plannedSeaRescue;
+
+        // Typ 28 = Hubschrauberstation Seenotrettung
+        const existingSeaHelicopter =
+              Number(buildings[28] || 0);
+
+        const plannedSeaHelicopter =
+              Number(plannedCounts[28] || 0);
+
+        const totalSeaHelicopter =
+              existingSeaHelicopter + plannedSeaHelicopter;
+
+        const seaLimit =
+              getSeaHelicopterLimit(totalSeaRescue);
+
+        return {
+            rth: {
+                existing: existingRTH,
+                planned: plannedRTH,
+                total: totalRTH,
+                limit: rthLimit,
+                exceeded: totalRTH > rthLimit
+            },
+
+            police: {
+                existing: existingPolice,
+                planned: plannedPolice,
+                total: totalPolice,
+                limit: policeLimit,
+                exceeded: totalPolice > policeLimit
+            },
+
+            sea: {
+                existingRescueStations: existingSeaRescue,
+                plannedRescueStations: plannedSeaRescue,
+                totalRescueStations: totalSeaRescue,
+                existingHelicopterStations: existingSeaHelicopter,
+                plannedHelicopterStations: plannedSeaHelicopter,
+                totalHelicopterStations: totalSeaHelicopter,
+                limit: seaLimit,
+                exceeded: totalSeaHelicopter > seaLimit
+            }
+        };
     }
 
     // Hilfsfunktion: Regex-escape
@@ -2743,26 +3910,61 @@
         try {
             const res = await fetch('/api/buildings');
             const data = await res.json();
+
+            // Komplette Daten der tatsächlich vorhandenen Gebäude speichern
+            LSS_MB.state.userBuildingsData = Array.isArray(data) ? data : [];
+
             const counts = {};
             let total = 0;
+
             data.forEach(b => {
                 total++;
-                if (typeof b.building_type === 'number' && b.building_type >= 0) {
-                    counts[b.building_type] = (counts[b.building_type] || 0) + 1;
+
+                if (
+                    typeof b.building_type === 'number' &&
+                    b.building_type >= 0
+                ) {
+                    counts[b.building_type] =
+                        (counts[b.building_type] || 0) + 1;
                 }
             });
+
             LSS_MB.state.userBuildings = counts;
             LSS_MB.state.userBuildingsTotal = total;
-            log('User buildings gezählt:', counts, 'total=', total);
-            return { counts, total };
+
+            log(
+                'User buildings gezählt:',
+                counts,
+                'total=',
+                total
+            );
+
+            return {
+                counts,
+                total
+            };
+
         } catch (err) {
             log('Fehler beim Laden der User-Wachen:', err);
+
+            LSS_MB.state.userBuildingsData = [];
             LSS_MB.state.userBuildings = {};
             LSS_MB.state.userBuildingsTotal = 0;
-            try { checkBereitsstellungsraumLimits(); } catch (e) { log('checkBereitsstellungsraumLimits Fehler nach fetchUserBuildingsCount', e); }
-            return { counts: {}, total: 0 };
-        }
 
+            try {
+                checkBereitsstellungsraumLimits();
+            } catch (e) {
+                log(
+                    'checkBereitsstellungsraumLimits Fehler nach fetchUserBuildingsCount',
+                    e
+                );
+            }
+
+            return {
+                counts: {},
+                total: 0
+            };
+        }
     }
 
     // Funktion um Verbands-BSR zu zählen
@@ -3107,6 +4309,9 @@
 
             const ownBRExceeded = totalOwnBR > allowedOwnBR;
             const allianceBRExceeded = totalAllianceBR > allowedAllianceBR;
+            const helicopterLimits = getHelicopterLimitStatus();
+
+            const helicopterLimitExceeded = helicopterLimits.rth.exceeded || helicopterLimits.police.exceeded || helicopterLimits.sea.exceeded;
 
             // Eigene-Ressourcen-Warnung (nur wenn beides nicht reicht)
             if (exceedsCredits && exceedsCoins) {
@@ -3151,6 +4356,64 @@
                 const prevBA = document.getElementById('lss_mb_br_alliance_warning');
                 if (prevBA && prevBA.parentNode) prevBA.parentNode.removeChild(prevBA);
             }
+            if (helicopterLimits.rth.exceeded) {
+                html += `
+                <br>
+                <div id="lss_mb_rth_warning" style="margin-top:6px;padding:6px;border-radius:4px; background:#fff5f5;color:#a40000; border:1px solid #ffdddd;">
+                <strong>Hinweis:</strong> Das Limit für Rettungshubschrauber-Stationen wurde überschritten. Erlaubt: <strong>${helicopterLimits.rth.limit}</strong>, vorhanden/geplant: <strong>${helicopterLimits.rth.total}</strong>.
+                </div>`;
+            } else {
+                const prev = document.getElementById('lss_mb_rth_warning');
+
+                if (prev && prev.parentNode) {
+                    prev.parentNode.removeChild(prev);
+                }
+            }
+            if (helicopterLimits.police.exceeded) {
+                html += `
+    <br>
+    <div id="lss_mb_police_heli_warning"
+         style="margin-top:6px;padding:6px;border-radius:4px;
+                background:#fff5f5;color:#a40000;
+                border:1px solid #ffdddd;">
+        <strong>Hinweis:</strong>
+        Das Limit für Polizeihubschrauber-Stationen wurde überschritten.
+        Erlaubt: <strong>${helicopterLimits.police.limit}</strong>,
+        vorhanden/geplant:
+        <strong>${helicopterLimits.police.total}</strong>.
+    </div>`;
+            } else {
+                const prev = document.getElementById(
+                    'lss_mb_police_heli_warning'
+                );
+
+                if (prev && prev.parentNode) {
+                    prev.parentNode.removeChild(prev);
+                }
+            }
+            if (helicopterLimits.sea.exceeded) {
+                html += `
+    <br>
+    <div id="lss_mb_sea_heli_warning"
+         style="margin-top:6px;padding:6px;border-radius:4px;
+                background:#fff5f5;color:#a40000;
+                border:1px solid #ffdddd;">
+        <strong>Hinweis:</strong>
+        Das Limit für Seenotrettungs-Hubschrauberstationen
+        wurde überschritten.
+        Erlaubt: <strong>${helicopterLimits.sea.limit}</strong>,
+        vorhanden/geplant:
+        <strong>${helicopterLimits.sea.totalHelicopterStations}</strong>.
+    </div>`;
+            } else {
+                const prev = document.getElementById(
+                    'lss_mb_sea_heli_warning'
+                );
+
+                if (prev && prev.parentNode) {
+                    prev.parentNode.removeChild(prev);
+                }
+            }
 
             // Buttons aktualisieren
             const buildBtn = document.getElementById('lss_mb_build_all_btn');
@@ -3158,6 +4421,7 @@
             const addBtn = document.getElementById('lss_mb_add_row_btn');
             const btn5 = document.getElementById('lss_mb_add_5_rows_btn');
             const btn10 = document.getElementById('lss_mb_add_10_rows_btn');
+            const btn20 = document.getElementById('lss_mb_add_20_rows_btn');
             const hasRows = Array.isArray(LSS_MB.state.buildRows) && LSS_MB.state.buildRows.length > 0;
 
             const shouldDisableForOwn = (exceedsCredits && exceedsCoins);
@@ -3169,12 +4433,12 @@
             const shouldDisableForBR = shouldDisableForOwnBR || shouldDisableForAllianceBR;
 
             // Gesamtlösung: Buttons deaktivieren wenn irgendein Grund vorliegt
-            const shouldDisable = !hasRows || shouldDisableForOwn || shouldDisableForAlliance || shouldDisableForBR;
+            const shouldDisable = !hasRows || shouldDisableForOwn || shouldDisableForAlliance || shouldDisableForBR || helicopterLimitExceeded;
 
             // Kaufbutton (Credits)
             if (buildBtn) {
                 const shouldDisableCredits =
-                      !hasRows || exceedsCredits || shouldDisableForAlliance || shouldDisableForBR;
+                      !hasRows || exceedsCredits || shouldDisableForAlliance || shouldDisableForBR || helicopterLimitExceeded;
 
                 buildBtn.disabled = shouldDisableCredits;
                 buildBtn.style.opacity = shouldDisableCredits ? '0.5' : '1';
@@ -3198,6 +4462,20 @@
                     buildBtn.title =
                         `Max. ${allowedAllianceBR} Verbands-Bereitsstellungsräume erlaubt ` +
                         `(vorhanden: ${existingAllianceBR}, geplant: ${plannedAllianceBR}).`;
+                } else if (helicopterLimitExceeded) {
+                    if (helicopterLimits.rth.exceeded) {
+                        buildBtn.title =
+                            `RTH-Limit überschritten ` +
+                            `(${helicopterLimits.rth.total} von ${helicopterLimits.rth.limit}).`;
+                    } else if (helicopterLimits.police.exceeded) {
+                        buildBtn.title =
+                            `Polizei-Hubschrauber-Limit überschritten ` +
+                            `(${helicopterLimits.police.total} von ${helicopterLimits.police.limit}).`;
+                    } else if (helicopterLimits.sea.exceeded) {
+                        buildBtn.title =
+                            `Seenotrettungs-Limit überschritten ` +
+                            `(${helicopterLimits.sea.totalHelicopterStations} von ${helicopterLimits.sea.limit}).`;
+                    }
                 } else {
                     buildBtn.title = 'Wachen/Gebäude bauen (Credits)';
                 }
@@ -3230,6 +4508,20 @@
                     coinsBtn.title =
                         `Max. ${allowedAllianceBR} Verbands-Bereitsstellungsräume erlaubt ` +
                         `(vorhanden: ${existingAllianceBR}, geplant: ${plannedAllianceBR}).`;
+                } else if (helicopterLimitExceeded) {
+                    if (helicopterLimits.rth.exceeded) {
+                        coinsBtn.title =
+                            `RTH-Limit überschritten ` +
+                            `(${helicopterLimits.rth.total} von ${helicopterLimits.rth.limit}).`;
+                    } else if (helicopterLimits.police.exceeded) {
+                        coinsBtn.title =
+                            `Polizei-Hubschrauber-Limit überschritten ` +
+                            `(${helicopterLimits.police.total} von ${helicopterLimits.police.limit}).`;
+                    } else if (helicopterLimits.sea.exceeded) {
+                        coinsBtn.title =
+                            `Seenotrettungs-Limit überschritten ` +
+                            `(${helicopterLimits.sea.totalHelicopterStations} von ${helicopterLimits.sea.limit}).`;
+                    }
                 } else {
                     coinsBtn.title = 'Wachen/Gebäude bauen (Coins)';
                 }
@@ -3238,7 +4530,7 @@
             // Button zum hinzufügen von Reihen
             if (addBtn) {
                 const shouldDisableAdd =
-                      shouldDisableForOwn || shouldDisableForAlliance || shouldDisableForBR;
+                      shouldDisableForOwn || shouldDisableForAlliance || shouldDisableForBR || helicopterLimitExceeded;
 
                 addBtn.disabled = shouldDisableAdd;
                 addBtn.style.opacity = shouldDisableAdd ? '0.5' : '1';
@@ -3260,70 +4552,156 @@
                     addBtn.title =
                         `Deaktiviert: Max. ${allowedAllianceBR} Verbands-Bereitsstellungsräume erlaubt ` +
                         `(vorhanden: ${existingAllianceBR}, geplant: ${plannedAllianceBR}).`;
+                } else if (helicopterLimitExceeded) {
+                    if (helicopterLimits.rth.exceeded) {
+                        addBtn.title =
+                            `Deaktiviert: RTH-Limit überschritten ` +
+                            `(${helicopterLimits.rth.total} von ${helicopterLimits.rth.limit}).`;
+                    } else if (helicopterLimits.police.exceeded) {
+                        addBtn.title =
+                            `Deaktiviert: Polizei-Hubschrauber-Limit überschritten ` +
+                            `(${helicopterLimits.police.total} von ${helicopterLimits.police.limit}).`;
+                    } else if (helicopterLimits.sea.exceeded) {
+                        addBtn.title =
+                            `Deaktiviert: Seenotrettungs-Limit überschritten ` +
+                            `(${helicopterLimits.sea.totalHelicopterStations} von ${helicopterLimits.sea.limit}).`;
+                    }
                 } else {
                     addBtn.title = 'Weitere Wache/Gebäude hinzufügen';
                 }
             }
 
             // +5 Button
-if (btn5) {
-    const shouldDisable5 =
-          shouldDisableForOwn || shouldDisableForAlliance || shouldDisableForBR;
+            if (btn5) {
+                const shouldDisable5 =
+                      shouldDisableForOwn || shouldDisableForAlliance || shouldDisableForBR || helicopterLimitExceeded;
 
-    btn5.disabled = shouldDisable5;
-    btn5.style.opacity = shouldDisable5 ? '0.5' : '1';
-    btn5.style.cursor = shouldDisable5 ? 'not-allowed' : 'pointer';
+                btn5.disabled = shouldDisable5;
+                btn5.style.opacity = shouldDisable5 ? '0.5' : '1';
+                btn5.style.cursor = shouldDisable5 ? 'not-allowed' : 'pointer';
 
-    if (shouldDisableForOwn) {
-        btn5.title =
-            `Deaktiviert: Deine eigenen Credits (${fmtTotal(availableCredits)}) ` +
-            `und Coins (${fmtTotal(availableCoins)}) reichen beide nicht für die gewählten Gebäude.`;
-    } else if (shouldDisableForAlliance) {
-        btn5.title =
-            `Deaktiviert: Verbandscredits (${fmtTotal(availableAllianceCredits)}) ` +
-            `reichen nicht für die geplanten Verbandsgebäude.`;
-    } else if (shouldDisableForOwnBR) {
-        btn5.title =
-            `Deaktiviert: Max. ${allowedOwnBR} eigene Bereitsstellungsräume erlaubt ` +
-            `(vorhanden: ${existingOwnBR}, geplant: ${plannedOwnBR}).`;
-    } else if (shouldDisableForAllianceBR) {
-        btn5.title =
-            `Deaktiviert: Max. ${allowedAllianceBR} Verbands-Bereitsstellungsräume erlaubt ` +
-            `(vorhanden: ${existingAllianceBR}, geplant: ${plannedAllianceBR}).`;
-    } else {
-        btn5.title = '+5 Reihen hinzufügen';
-    }
-}
+                if (shouldDisableForOwn) {
+                    btn5.title =
+                        `Deaktiviert: Deine eigenen Credits (${fmtTotal(availableCredits)}) ` +
+                        `und Coins (${fmtTotal(availableCoins)}) reichen beide nicht für die gewählten Gebäude.`;
+                } else if (shouldDisableForAlliance) {
+                    btn5.title =
+                        `Deaktiviert: Verbandscredits (${fmtTotal(availableAllianceCredits)}) ` +
+                        `reichen nicht für die geplanten Verbandsgebäude.`;
+                } else if (shouldDisableForOwnBR) {
+                    btn5.title =
+                        `Deaktiviert: Max. ${allowedOwnBR} eigene Bereitsstellungsräume erlaubt ` +
+                        `(vorhanden: ${existingOwnBR}, geplant: ${plannedOwnBR}).`;
+                } else if (shouldDisableForAllianceBR) {
+                    btn5.title =
+                        `Deaktiviert: Max. ${allowedAllianceBR} Verbands-Bereitsstellungsräume erlaubt ` +
+                        `(vorhanden: ${existingAllianceBR}, geplant: ${plannedAllianceBR}).`;
+                } else if (helicopterLimitExceeded) {
+                    if (helicopterLimits.rth.exceeded) {
+                        btn5.title =
+                            `Deaktiviert: RTH-Limit überschritten ` +
+                            `(${helicopterLimits.rth.total} von ${helicopterLimits.rth.limit}).`;
+                    } else if (helicopterLimits.police.exceeded) {
+                        btn5.title =
+                            `Deaktiviert: Polizei-Hubschrauber-Limit überschritten ` +
+                            `(${helicopterLimits.police.total} von ${helicopterLimits.police.limit}).`;
+                    } else if (helicopterLimits.sea.exceeded) {
+                        btn5.title =
+                            `Deaktiviert: Seenotrettungs-Limit überschritten ` +
+                            `(${helicopterLimits.sea.totalHelicopterStations} von ${helicopterLimits.sea.limit}).`;
+                    }
+                } else {
+                    btn5.title = '+5 Reihen hinzufügen';
+                }
+            }
 
-// +10 Button
-if (btn10) {
-    const shouldDisable10 =
-          shouldDisableForOwn || shouldDisableForAlliance || shouldDisableForBR;
+            // +10 Button
+            if (btn10) {
+                const shouldDisable10 =
+                      shouldDisableForOwn || shouldDisableForAlliance || shouldDisableForBR || helicopterLimitExceeded;
 
-    btn10.disabled = shouldDisable10;
-    btn10.style.opacity = shouldDisable10 ? '0.5' : '1';
-    btn10.style.cursor = shouldDisable10 ? 'not-allowed' : 'pointer';
+                btn10.disabled = shouldDisable10;
+                btn10.style.opacity = shouldDisable10 ? '0.5' : '1';
+                btn10.style.cursor = shouldDisable10 ? 'not-allowed' : 'pointer';
 
-    if (shouldDisableForOwn) {
-        btn10.title =
-            `Deaktiviert: Deine eigenen Credits (${fmtTotal(availableCredits)}) ` +
-            `und Coins (${fmtTotal(availableCoins)}) reichen beide nicht für die gewählten Gebäude.`;
-    } else if (shouldDisableForAlliance) {
-        btn10.title =
-            `Deaktiviert: Verbandscredits (${fmtTotal(availableAllianceCredits)}) ` +
-            `reichen nicht für die geplanten Verbandsgebäude.`;
-    } else if (shouldDisableForOwnBR) {
-        btn10.title =
-            `Deaktiviert: Max. ${allowedOwnBR} eigene Bereitsstellungsräume erlaubt ` +
-            `(vorhanden: ${existingOwnBR}, geplant: ${plannedOwnBR}).`;
-    } else if (shouldDisableForAllianceBR) {
-        btn10.title =
-            `Deaktiviert: Max. ${allowedAllianceBR} Verbands-Bereitsstellungsräume erlaubt ` +
-            `(vorhanden: ${existingAllianceBR}, geplant: ${plannedAllianceBR}).`;
-    } else {
-        btn10.title = '+10 Reihen hinzufügen';
-    }
-}
+                if (shouldDisableForOwn) {
+                    btn10.title =
+                        `Deaktiviert: Deine eigenen Credits (${fmtTotal(availableCredits)}) ` +
+                        `und Coins (${fmtTotal(availableCoins)}) reichen beide nicht für die gewählten Gebäude.`;
+                } else if (shouldDisableForAlliance) {
+                    btn10.title =
+                        `Deaktiviert: Verbandscredits (${fmtTotal(availableAllianceCredits)}) ` +
+                        `reichen nicht für die geplanten Verbandsgebäude.`;
+                } else if (shouldDisableForOwnBR) {
+                    btn10.title =
+                        `Deaktiviert: Max. ${allowedOwnBR} eigene Bereitsstellungsräume erlaubt ` +
+                        `(vorhanden: ${existingOwnBR}, geplant: ${plannedOwnBR}).`;
+                } else if (shouldDisableForAllianceBR) {
+                    btn10.title =
+                        `Deaktiviert: Max. ${allowedAllianceBR} Verbands-Bereitsstellungsräume erlaubt ` +
+                        `(vorhanden: ${existingAllianceBR}, geplant: ${plannedAllianceBR}).`;
+                } else if (helicopterLimitExceeded) {
+                    if (helicopterLimits.rth.exceeded) {
+                        btn10.title =
+                            `Deaktiviert: RTH-Limit überschritten ` +
+                            `(${helicopterLimits.rth.total} von ${helicopterLimits.rth.limit}).`;
+                    } else if (helicopterLimits.police.exceeded) {
+                        btn10.title =
+                            `Deaktiviert: Polizei-Hubschrauber-Limit überschritten ` +
+                            `(${helicopterLimits.police.total} von ${helicopterLimits.police.limit}).`;
+                    } else if (helicopterLimits.sea.exceeded) {
+                        btn10.title =
+                            `Deaktiviert: Seenotrettungs-Limit überschritten ` +
+                            `(${helicopterLimits.sea.totalHelicopterStations} von ${helicopterLimits.sea.limit}).`;
+                    }
+                } else {
+                    btn10.title = '+10 Reihen hinzufügen';
+                }
+            }
+
+            // +20 Button
+            if (btn20) {
+                const shouldDisable10 =
+                      shouldDisableForOwn || shouldDisableForAlliance || shouldDisableForBR || helicopterLimitExceeded;
+
+                btn20.disabled = shouldDisable10;
+                btn20.style.opacity = shouldDisable10 ? '0.5' : '1';
+                btn20.style.cursor = shouldDisable10 ? 'not-allowed' : 'pointer';
+
+                if (shouldDisableForOwn) {
+                    btn20.title =
+                        `Deaktiviert: Deine eigenen Credits (${fmtTotal(availableCredits)}) ` +
+                        `und Coins (${fmtTotal(availableCoins)}) reichen beide nicht für die gewählten Gebäude.`;
+                } else if (shouldDisableForAlliance) {
+                    btn20.title =
+                        `Deaktiviert: Verbandscredits (${fmtTotal(availableAllianceCredits)}) ` +
+                        `reichen nicht für die geplanten Verbandsgebäude.`;
+                } else if (shouldDisableForOwnBR) {
+                    btn20.title =
+                        `Deaktiviert: Max. ${allowedOwnBR} eigene Bereitsstellungsräume erlaubt ` +
+                        `(vorhanden: ${existingOwnBR}, geplant: ${plannedOwnBR}).`;
+                } else if (shouldDisableForAllianceBR) {
+                    btn20.title =
+                        `Deaktiviert: Max. ${allowedAllianceBR} Verbands-Bereitsstellungsräume erlaubt ` +
+                        `(vorhanden: ${existingAllianceBR}, geplant: ${plannedAllianceBR}).`;
+                } else if (helicopterLimitExceeded) {
+                    if (helicopterLimits.rth.exceeded) {
+                        btn20.title =
+                            `Deaktiviert: RTH-Limit überschritten ` +
+                            `(${helicopterLimits.rth.total} von ${helicopterLimits.rth.limit}).`;
+                    } else if (helicopterLimits.police.exceeded) {
+                        btn20.title =
+                            `Deaktiviert: Polizei-Hubschrauber-Limit überschritten ` +
+                            `(${helicopterLimits.police.total} von ${helicopterLimits.police.limit}).`;
+                    } else if (helicopterLimits.sea.exceeded) {
+                        btn20.title =
+                            `Deaktiviert: Seenotrettungs-Limit überschritten ` +
+                            `(${helicopterLimits.sea.totalHelicopterStations} von ${helicopterLimits.sea.limit}).`;
+                    }
+                } else {
+                    btn20.title = '+20 Reihen hinzufügen';
+                }
+            }
 
         } catch (e) {
             log('Warnungsprüfung / Button-Update konnte nicht durchgeführt werden', e);
@@ -3350,5 +4728,693 @@ if (btn10) {
         return false;
     }
 
+    LSS_MB.dialog = (() => {
+
+        function showDialog({
+            title = '',
+            text = '',
+            value = '',
+            placeholder = '',
+            mode = 'alert'
+        }) {
+
+            return new Promise(resolve => {
+
+                const overlay = document.createElement('div');
+                overlay.className = 'lss-mb-dialog-overlay';
+
+                Object.assign(overlay.style, {
+                    position: 'fixed',
+                    inset: 0,
+                    background: 'rgba(0,0,0,.45)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 999999
+                });
+
+                const box = document.createElement('div');
+
+                Object.assign(box.style, {
+                    minWidth: '420px',
+                    maxWidth: '500px',
+                    background: document.body.classList.contains('dark') ? '#2f2f2f' : '#fff',
+                    color: document.body.classList.contains('dark') ? '#fff' : '#000',
+                    borderRadius: '8px',
+                    padding: '15px',
+                    boxShadow: '0 0 20px rgba(0,0,0,.4)'
+                });
+
+                const h = document.createElement('h4');
+                h.textContent = title;
+                h.style.marginTop = '0';
+
+                box.appendChild(h);
+
+                if (text) {
+                    const p = document.createElement('div');
+                    p.style.marginBottom = '12px';
+                    p.textContent = text;
+                    box.appendChild(p);
+                }
+
+                let input = null;
+
+                if (mode === 'prompt') {
+
+                    input = document.createElement('input');
+                    input.type = 'text';
+                    input.value = value;
+                    input.placeholder = placeholder;
+
+                    Object.assign(input.style, {
+                        width: '100%',
+                        marginBottom: '15px',
+                        padding: '6px'
+                    });
+
+                    box.appendChild(input);
+                }
+
+                const footer = document.createElement('div');
+
+                Object.assign(footer.style, {
+                    display: 'flex',
+                    justifyContent: 'flex-end',
+                    gap: '8px'
+                });
+
+                function close(result) {
+                    document.removeEventListener('keydown', keyHandler);
+                    overlay.remove();
+                    resolve(result);
+                }
+
+                function keyHandler(e) {
+
+                    if (e.key === 'Escape')
+                        close(mode === 'confirm' ? false : null);
+
+                    if (e.key === 'Enter') {
+
+                        if (mode === 'prompt')
+                            close(input.value.trim());
+                        else if (mode === 'confirm')
+                            close(true);
+                        else
+                            close();
+                    }
+                }
+
+                document.addEventListener('keydown', keyHandler);
+
+                if (mode !== 'alert') {
+
+                    const cancel = document.createElement('button');
+                    cancel.className = BUTTON_CLASSES.danger;
+                    cancel.textContent = 'Abbrechen';
+                    cancel.onclick = () => close(mode === 'confirm' ? false : null);
+                    footer.appendChild(cancel);
+                }
+                const ok = document.createElement('button');
+                ok.className = BUTTON_CLASSES.success;
+                ok.textContent =
+                    mode === 'confirm'
+                    ? 'Ja'
+                : mode === 'prompt'
+                    ? 'Speichern'
+                : 'OK';
+                ok.onclick = () => {
+
+                    if (mode === 'prompt')
+                        close(input.value.trim());
+                    else if (mode === 'confirm')
+                        close(true);
+                    else
+                        close();
+
+                };
+
+                footer.appendChild(ok);
+
+                box.appendChild(footer);
+                overlay.appendChild(box);
+                document.body.appendChild(overlay);
+
+                if (input)
+                    setTimeout(() => input.focus(), 0);
+
+            });
+
+        }
+
+        async function alert(options) {
+            return showDialog({
+                ...options,
+                mode: 'alert'
+            });
+        }
+
+        async function confirm(options) {
+            return showDialog({
+                ...options,
+                mode: 'confirm'
+            });
+        }
+
+        async function prompt(options) {
+            return showDialog({
+                ...options,
+                mode: 'prompt'
+            });
+        }
+
+        return {
+            prompt,
+            confirm,
+            alert
+        };
+
+    })();
+    LSS_MB.blueprints = (() => {
+        const DB_NAME = 'LSS_MB_DB';
+        const STORE = 'blueprints';
+        const VERSION = 1;
+        let db = null;
+
+        async function openDB() {
+            if (db) return db;
+
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(DB_NAME, VERSION);
+
+                req.onupgradeneeded = e => {
+                    const d = e.target.result;
+
+                    if (!d.objectStoreNames.contains(STORE)) {
+                        const store = d.createObjectStore(STORE, {
+                            keyPath: 'id'
+                        });
+
+                        store.createIndex('name', 'name', { unique: true });
+                    }
+                };
+
+                req.onsuccess = () => {
+                    db = req.result;
+                    resolve(db);
+                };
+
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        function tx(mode) {
+            return db.transaction(STORE, mode).objectStore(STORE);
+        }
+
+        async function getAll() {
+            await openDB();
+
+            return new Promise((resolve, reject) => {
+                const req = tx('readonly').getAll();
+
+                req.onsuccess = () => {
+                    const arr = req.result || [];
+                    arr.sort((a,b) =>
+                             a.name.localeCompare(b.name, 'de', {
+                        sensitivity:'base'
+                    })
+                            );
+                    resolve(arr);
+                };
+
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function get(id) {
+            await openDB();
+
+            return new Promise((resolve, reject) => {
+                const req = tx('readonly').get(id);
+
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function save(name) {
+            name = name?.trim();
+
+            if (!name) {
+                await LSS_MB.dialog.alert({
+                    title: 'Fehler',
+                    text: 'Bitte einen Namen eingeben.'
+                });
+                return null;
+            }
+
+            await openDB();
+
+            const exists = await new Promise((resolve, reject) => {
+                const index = tx('readonly').index('name');
+                const req = index.get(name);
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => reject(req.error);
+            });
+
+            if (exists) {
+                await LSS_MB.dialog.alert({
+                    title: 'Bauplan vorhanden',
+                    text: `Der Bauplan "${name}" existiert bereits.\nBitte wähle einen anderen Namen.`
+                });
+                return null;
+            }
+
+            const blueprint = {
+                id: crypto.randomUUID(),
+                name,
+                created: Date.now(),
+                updated: Date.now(),
+                rows: LSS_MB.state.buildRows.map(r => {
+                    const data = structuredClone(r.data);
+                    delete data.building;
+                    return data;
+                })
+            };
+
+            return new Promise((resolve, reject) => {
+                const req = tx('readwrite').add(blueprint);
+                req.onsuccess = () => resolve(blueprint);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function update(id) {
+
+            const bp = await get(id);
+            if (!bp) return null;
+
+            bp.updated = Date.now();
+
+            bp.rows = LSS_MB.state.buildRows.map(r => {
+                const data = structuredClone(r.data);
+                delete data.building;
+                return data;
+            });
+
+            return new Promise((resolve, reject) => {
+                const req = tx("readwrite").put(bp);
+
+                req.onsuccess = () => resolve(bp);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function remove(id) {
+            await openDB();
+
+            return new Promise((resolve, reject) => {
+                const req = tx('readwrite').delete(id);
+
+                req.onsuccess = () => resolve();
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function rename(id, newName) {
+            newName = newName?.trim();
+
+            if (!newName)
+                return null;
+
+            const bp = await get(id);
+            if (!bp)
+                return null;
+
+            const all = await getAll();
+
+            if (all.some(x => x.id !== id && x.name === newName)) {
+                await LSS_MB.dialog.alert({
+                    title: 'Name bereits vergeben',
+                    text: `Der Name "${newName}" wird bereits verwendet.`
+                });
+                return null;
+            }
+
+            bp.name = newName;
+            bp.updated = Date.now();
+
+            return new Promise((resolve, reject) => {
+                const req = tx('readwrite').put(bp);
+                req.onsuccess = () => resolve(bp);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function clearCurrentRows() {
+
+            for (const row of [...LSS_MB.state.buildRows]) {
+
+                if (row.marker) {
+                    try {
+                        LSS_MB.state.map.removeLayer(row.marker);
+                    } catch {}
+                }
+
+                row.el?.remove();
+            }
+
+            LSS_MB.state.buildRows = [];
+            LSS_MB.state.markers = [];
+
+            renumberBuildRows();
+            updateRowCountDisplay();
+        }
+
+        async function load(id) {
+
+            const bp = await get(id);
+            if (!bp) return;
+
+            LSS_MB.loading.show(
+                "Bauplan wird geladen",
+                bp.rows.length
+            );
+
+            try {
+
+                await clearCurrentRows();
+
+                let index = 0;
+
+                for (const rowData of bp.rows) {
+
+                    if (LSS_MB.loading.isCancelled())
+                        break;
+
+                    index++;
+                    LSS_MB.loading.update(index, bp.rows.length);
+
+                    LSS_MB.ui.createBuildRow();
+
+                    const row = LSS_MB.state.buildRows.at(-1);
+                    if (!row) continue;
+
+                    Object.assign(row.data, rowData);
+
+                    const s = row.selects;
+
+                    // Gebäudetyp
+                    if (rowData.buildingType) {
+
+                        s.building.value = rowData.buildingType;
+
+                        s.building.dispatchEvent(
+                            new Event('change', { bubbles: true })
+                        );
+
+                        await new Promise(r => setTimeout(r, 0));
+
+                        if (LSS_MB.loading.isCancelled())
+                            break;
+                    }
+
+                    // Krankenhausmodus
+                    if (rowData.hospitalMode && s.hospitalMode) {
+
+                        s.hospitalMode.value = rowData.hospitalMode;
+
+                        s.hospitalMode.dispatchEvent(
+                            new Event('change', { bubbles: true })
+                        );
+                    }
+
+                    // Schulmodus
+                    if (rowData.schoolMode && s.schoolMode) {
+
+                        s.schoolMode.value = rowData.schoolMode;
+
+                        s.schoolMode.dispatchEvent(
+                            new Event('change', { bubbles: true })
+                        );
+                    }
+
+                    // Bereitstellungsraum
+                    if (rowData.bereitschaftsraumMode && s.bereitstellungsraum) {
+
+                        s.bereitstellungsraum.value =
+                            rowData.bereitschaftsraumMode;
+
+                        s.bereitstellungsraum.dispatchEvent(
+                            new Event('change', { bubbles: true })
+                        );
+                    }
+
+                    // Leitstelle
+                    if (rowData.leitstelle) {
+
+                        let tries = 0;
+
+                        while (!row.lstSelectLoaded() && tries < 50) {
+
+                            if (LSS_MB.loading.isCancelled())
+                                break;
+
+                            await new Promise(r => setTimeout(r, 100));
+                            tries++;
+                        }
+
+                        if (LSS_MB.loading.isCancelled())
+                            break;
+
+                        s.leitstelle.value = rowData.leitstelle;
+                    }
+
+                    // Fahrzeug
+                    if (rowData.startVehicle && s.vehicle) {
+
+                        s.vehicle.value = rowData.startVehicle;
+
+                        s.vehicle.dispatchEvent(
+                            new Event('change', { bubbles: true })
+                        );
+                    }
+
+                    // Inputs setzen
+                    const inputs = row.el.querySelectorAll('input');
+
+                    if (inputs[0]) inputs[0].value = rowData.address || '';
+                    if (inputs[1]) inputs[1].value = rowData.name || '';
+
+                    // Marker wiederherstellen
+                    if (
+                        rowData.lat != null &&
+                        rowData.lng != null &&
+                        LSS_MB.state.map
+                    ) {
+
+                        LSS_MB.mapApi.addMarker(rowData.lat, rowData.lng);
+
+                        const marker = LSS_MB.state.markers.at(-1);
+
+                        if (marker) {
+
+                            row.marker = marker;
+                            marker._lssMbRow = row;
+
+                            updateMarkerLabel(row);
+
+                            marker.on('dragend', () => {
+                                const p = marker.getLatLng();
+                                row.data.lat = p.lat;
+                                row.data.lng = p.lng;
+                            });
+                        }
+                    }
+                }
+
+                renumberBuildRows();
+                updateRowCountDisplay();
+                updateBuildAllButtonState();
+                updateCostPreview();
+
+                if (LSS_MB.loading.isCancelled()) {
+
+                    log("Bauplanladen abgebrochen.");
+
+                    await LSS_MB.dialog.alert({
+                        title: "Abgebrochen",
+                        text: `Der Bauplan wurde nach ${index} von ${bp.rows.length} Reihen abgebrochen.`
+                    });
+
+                } else {
+
+                    log("Bauplan geladen:", bp.name);
+
+                    await LSS_MB.dialog.alert({
+                        title: "Bauplan geladen",
+                        text: `"${bp.name}" wurde erfolgreich geladen.`
+                    });
+                }
+
+            } finally {
+
+                LSS_MB.loading.close();
+            }
+        }
+
+        async function exportBlueprint(id) {
+
+            const bp = await get(id);
+            if (!bp) return;
+
+            // Kopie für den Export erstellen
+            const exportData = structuredClone(bp);
+
+            // Redundante Gebäudedaten entfernen
+            exportData.rows.forEach(row => {
+                delete row.building;
+            });
+
+            const blob = new Blob(
+                [JSON.stringify(exportData, null, 2)],
+                { type: 'application/json' }
+            );
+
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `${bp.name}.json`;
+            a.click();
+
+            URL.revokeObjectURL(a.href);
+        }
+
+        async function importBlueprint(file) {
+            const text = await file.text();
+            const bp = JSON.parse(text);
+
+            await openDB();
+
+            const all = await getAll();
+
+            if (all.some(x => x.name === bp.name))
+                bp.name += ' (Import)';
+
+            bp.id = crypto.randomUUID();
+            bp.created = Date.now();
+            bp.updated = Date.now();
+
+            return new Promise((resolve, reject) => {
+                const req = tx('readwrite').add(bp);
+                req.onsuccess = () => resolve(bp);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        return {
+            getAll,
+            get,
+            save,
+            update,
+            remove,
+            rename,
+            load,
+            exportBlueprint,
+            importBlueprint
+        };
+
+    })();
+    LSS_MB.loading = (() => {
+
+        let overlay = null;
+        let cancelled = false;
+
+        function show(title, total) {
+
+            cancelled = false;
+            disableButtonsDuringBuild(true);
+
+            overlay = $(`
+            <div style="
+                position:fixed;
+                inset:0;
+                background:rgba(0,0,0,.45);
+                z-index:999999;
+                display:flex;
+                justify-content:center;
+                align-items:center;
+            ">
+                <div class="panel panel-default" style="width:420px;max-width:90%;">
+
+                    <div class="panel-heading">
+                        <strong>${title}</strong>
+                    </div>
+
+                    <div class="panel-body">
+
+                        <div id="lssmb-loading-text">
+                            Reihe 0 von ${total} geladen
+                        </div>
+
+                        <div class="progress" style="margin:15px 0;">
+                            <div id="lssmb-loading-bar"
+                                 class="progress-bar progress-bar-info progress-bar-striped active"
+                                 role="progressbar"
+                                 style="width:0%">
+                            </div>
+                        </div>
+
+                        <div style="text-align:right;">
+                            <button class="btn btn-danger">
+                                Abbrechen
+                            </button>
+                        </div>
+
+                    </div>
+
+                </div>
+            </div>
+        `);
+
+            overlay.find("button").on("click", () => {
+                cancelled = true;
+            });
+
+            $("body").append(overlay);
+        }
+
+        function update(current, total) {
+
+            if (!overlay)
+                return;
+
+            $("#lssmb-loading-text").text(
+                `Reihe ${current} von ${total} geladen`
+            );
+
+            $("#lssmb-loading-bar")
+                .css("width", ((current / total) * 100) + "%")
+                .text(`${current}/${total}`);
+        }
+
+        function close() {
+            disableButtonsDuringBuild(false);
+            overlay?.remove();
+            overlay = null;
+        }
+
+        function isCancelled() {
+            return cancelled;
+        }
+
+        return {
+            show,
+            update,
+            close,
+            isCancelled
+        };
+    })();
     LSS_MB.init();
 })();
